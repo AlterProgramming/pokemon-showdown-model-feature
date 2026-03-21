@@ -321,16 +321,23 @@ export abstract class BattlePlayer {
 	readonly stream: Streams.ObjectReadWriteStream<string>;
 	readonly log: string[];
 	readonly debug: boolean;
+	protected stopped: boolean;
 
 	constructor(playerStream: Streams.ObjectReadWriteStream<string>, debug = false) {
 		this.stream = playerStream;
 		this.log = [];
 		this.debug = debug;
+		this.stopped = false;
 	}
 
 	async start() {
-		for await (const chunk of this.stream) {
-			this.receive(chunk);
+		try {
+			for await (const chunk of this.stream) {
+				if (this.stopped) continue;
+				this.receive(chunk);
+			}
+		} finally {
+			this.stopped = true;
 		}
 	}
 
@@ -355,7 +362,12 @@ export abstract class BattlePlayer {
 		throw error;
 	}
 
+	stop() {
+		this.stopped = true;
+	}
+
 	choose(choice: string) {
+		if (this.stopped) return;
 		void this.stream.write(choice);
 	}
 }

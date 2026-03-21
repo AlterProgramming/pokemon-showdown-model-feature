@@ -71,3 +71,10 @@ local_settings.py
 pip-log.txt
 # redis dumps
 *.rdb
+
+# local RL debugging / benchmark scratch files
+runner-*.log
+state_vector.json
+model_data.json
+legalMoves.json
+legalSwitches.json

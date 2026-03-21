@@ -10,18 +10,21 @@ import type { ObjectReadWriteStream } from '../../lib/streams';
 import { BattlePlayer } from '../battle-stream';
 import { PRNG, type PRNGSeed } from '../prng';
 import type { ChoiceRequest } from '../side';
+import { ProtocolStateTracker } from './protocol-state-tracker';
 
 export class RandomPlayerAI extends BattlePlayer {
 	protected readonly move: number;
 	protected readonly mega: number;
 	protected readonly prng: PRNG;
-
+	private tracker = new ProtocolStateTracker();
+	
 	constructor(
 		playerStream: ObjectReadWriteStream<string>,
 		options: { move?: number, mega?: number, seed?: PRNG | PRNGSeed | null } = {},
 		debug = false
 	) {
 		super(playerStream, debug);
+		
 		this.move = options.move || 1.0;
 		this.mega = options.mega || 0;
 		this.prng = PRNG.get(options.seed);
@@ -34,6 +37,10 @@ export class RandomPlayerAI extends BattlePlayer {
 		throw error;
 	}
 
+	override receive(chunk: string): void {
+		this.tracker.applyChunk(chunk);
+		super.receive(chunk);
+	}
 	override receiveRequest(request: ChoiceRequest) {
 		if (request.wait) {
 			// wait request
@@ -160,6 +167,10 @@ export class RandomPlayerAI extends BattlePlayer {
 					return `switch ${target}`;
 				} else if (moves.length) {
 					const move = this.chooseMove(active, moves);
+					// console.log(moves)
+					// const snapshot = this.tracker.getSnapshot();
+					// const stateVector = this.tracker.encodeState(snapshot);
+            		// console.log(stateVector.length)
 					if (move.endsWith(` zmove`)) {
 						canZMove = false;
 						return move;
@@ -186,6 +197,7 @@ export class RandomPlayerAI extends BattlePlayer {
 						` dynamax='${canDynamax}', terastallize=${canTerastallize})`);
 				}
 			});
+			// console.log(choices.join(`, `));
 			this.choose(choices.join(`, `));
 		}
 	}
