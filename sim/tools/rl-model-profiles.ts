@@ -4,7 +4,7 @@
  * continue to be benchmarked against newer, richer pipelines.
  **********************************************************************/
 
-export type RLModelProfile = 'move-only' | 'joint-policy' | 'custom';
+export type RLModelProfile = 'move-only' | 'joint-policy' | 'joint-policy-value' | 'custom';
 
 export type RLModelProfileConfig = {
 	profile: RLModelProfile;
@@ -21,6 +21,11 @@ const PROFILE_CONFIGS: Record<Exclude<RLModelProfile, 'custom'>, RLModelProfileC
 	'joint-policy': {
 		profile: 'joint-policy',
 		description: 'Full move-or-switch action space for newer joint-policy models.',
+		allowVoluntarySwitches: true,
+	},
+	'joint-policy-value': {
+		profile: 'joint-policy-value',
+		description: 'Joint policy with auxiliary turn-outcome and value heads for the newer model_4 pipeline.',
 		allowVoluntarySwitches: true,
 	},
 };
@@ -50,6 +55,13 @@ export function normalizeRLModelProfile(value: string | undefined): RLModelProfi
 	case 'model2':
 	case 'joint-model2':
 		return 'joint-policy';
+	case 'joint-policy-value':
+	case 'jointpolicyvalue':
+	case 'joint_policy_value':
+	case 'joint-value':
+	case 'value-head':
+	case 'value-policy':
+		return 'joint-policy-value';
 	case 'custom':
 		return 'custom';
 	default:

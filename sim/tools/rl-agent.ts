@@ -11,6 +11,16 @@ import { BattlePlayer } from "../battle-stream";
 import type { ChoiceRequest } from "../side";
 import { ProtocolStateTracker } from "./protocol-state-tracker";
 import {parseBooleanOption, resolveRLModelProfileConfig, type RLModelProfile} from "./rl-model-profiles";
+import { RLModelClient } from "./rl-model-client";
+import {
+	buildLegalMoveOptions,
+	buildLegalReviveTargets,
+	buildLegalSwitchTargets,
+	extractSwitchSlot,
+	getPrimaryActivePokemon,
+	hasReviveSelectionRequest,
+	requestSlotForChoice,
+} from "./rl-action-helpers";
 
 type TimingMetric = {
 	count: number;
@@ -143,13 +153,11 @@ export function getRLAgentMetrics() {
 }
 
 export class RLAgentAI extends BattlePlayer {
-	private readonly endpoint: string;
 	private readonly modelID: string | undefined;
 	private readonly modelProfile: RLModelProfile;
 	private readonly allowVoluntarySwitches: boolean;
+	private readonly modelClient: RLModelClient;
 	private tracker = new ProtocolStateTracker();
-	private lastModelData: AnyObject | null = null;
-	private lastModelResponse: AnyObject | null = null;
 	private lastRequestSide: string | undefined;
 	constructor(
 		playerStream: ObjectReadWriteStream<string>,
@@ -166,10 +174,16 @@ export class RLAgentAI extends BattlePlayer {
 			options.modelProfile ?? process.env.RL_MODEL_PROFILE,
 			options.allowVoluntarySwitches ?? parseBooleanOption(process.env.RL_ALLOW_VOLUNTARY_SWITCHES),
 		);
-		this.endpoint = options.endpoint || "http://127.0.0.1:5000/predict";
-		this.modelID = options.modelID ?? process.env.RL_MODEL_ID;
+		const endpoint = options.endpoint || "http://127.0.0.1:5000/predict";
+		const modelID = options.modelID ?? process.env.RL_MODEL_ID;
+		this.modelID = modelID;
 		this.modelProfile = profileConfig.profile;
 		this.allowVoluntarySwitches = profileConfig.allowVoluntarySwitches;
+		this.modelClient = new RLModelClient({
+			endpoint,
+			modelID,
+			modelProfile: this.modelProfile,
+		});
 	}
 	override receive(chunk: string): void {
 		this.tracker.applyChunk(chunk);
@@ -180,9 +194,9 @@ export class RLAgentAI extends BattlePlayer {
 		if (error.message.startsWith("[Unavailable choice]")) return;
 		if (error.message.startsWith("[Invalid choice]")) {
 			console.error("Last model decision payload:");
-			console.error(this.stringifyForLog(this.lastModelData));
+			console.error(this.stringifyForLog(this.modelClient.lastRequest));
 			console.error("Last model decision response:");
-			console.error(this.stringifyForLog(this.lastModelResponse));
+			console.error(this.stringifyForLog(this.modelClient.lastResponse));
 			console.error(`Error side: ${this.describeErrorSide()}`);
 		}
 		throw error;
@@ -200,10 +214,10 @@ export class RLAgentAI extends BattlePlayer {
 			if (request.forceSwitch) {
 				rlAgentMetrics.actions.forceSwitchRequests++;
 				const pokemon = request.side.pokemon;
-				const hasReviveRequest = this.hasReviveSelectionRequest(pokemon);
+				const hasReviveRequest = hasReviveSelectionRequest(pokemon);
 				if (hasReviveRequest) rlAgentMetrics.actions.forceSwitchRequestsWithReviveSelection++;
-				const legalSwitches = hasReviveRequest ? [] : this.buildLegalSwitchTargets(request.side.id, pokemon);
-				const legalRevives = hasReviveRequest ? this.buildLegalReviveTargets(request.side.id, pokemon) : [];
+				const legalSwitches = hasReviveRequest ? [] : buildLegalSwitchTargets(request.side.id, pokemon, this.getStableSlot);
+				const legalRevives = hasReviveRequest ? buildLegalReviveTargets(request.side.id, pokemon, this.getStableSlot) : [];
 				const fallbackTargets = legalRevives.length ? legalRevives : legalSwitches;
 
 				if (!fallbackTargets.length) {
@@ -224,13 +238,13 @@ export class RLAgentAI extends BattlePlayer {
 				};
 
 				const action = await this.queryModel(modelData);
-				const switchSlot = this.extractSwitchSlot(action);
+				const switchSlot = extractSwitchSlot(action);
 				if ((action.type === "switch" || action.type === "revive") && switchSlot) {
 					if (action.type === "revive") rlAgentMetrics.actions.modelReviveChoices++;
 					else rlAgentMetrics.actions.modelForceSwitchChoices++;
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
-					const fallbackSlot = this.requestSlotForChoice(fallbackTargets[0]);
+					const fallbackSlot = requestSlotForChoice(fallbackTargets[0]);
 					if (fallbackSlot) {
 						rlAgentMetrics.actions.fallbackForceSwitchChoices++;
 						this.chooseSwitchLikeAction(fallbackSlot);
@@ -250,7 +264,7 @@ export class RLAgentAI extends BattlePlayer {
 			else if (request.active) {
 				rlAgentMetrics.actions.moveTurnRequests++;
 				const active = request.active[0];
-				const pokemon = this.getPrimaryActivePokemon(request.side.pokemon);
+				const pokemon = getPrimaryActivePokemon(request.side.pokemon);
 
 				if (!pokemon || pokemon.condition.endsWith(" fnt")) {
 					rlAgentMetrics.actions.passChoices++;
@@ -258,16 +272,9 @@ export class RLAgentAI extends BattlePlayer {
 					return;
 				}
 
-				const possibleMoves = active.moves
-					.map((m: any, i: number) => ({
-						slot: i + 1,
-						move: m.move,
-						id: m.id,
-						disabled: m.disabled,
-					}))
-					.filter((m: any) => !m.disabled);
+				const possibleMoves = buildLegalMoveOptions(active);
 
-				const availableSwitches = this.buildLegalSwitchTargets(request.side.id, request.side.pokemon);
+				const availableSwitches = buildLegalSwitchTargets(request.side.id, request.side.pokemon, this.getStableSlot);
 				if (availableSwitches.length) rlAgentMetrics.actions.moveTurnRequestsWithSwitchOptions++;
 				const canSwitch = this.allowVoluntarySwitches ? availableSwitches : [];
 				if (!this.allowVoluntarySwitches && availableSwitches.length) {
@@ -285,7 +292,7 @@ export class RLAgentAI extends BattlePlayer {
 				
 				const modelResponse = await this.queryModel(modelData);
 				const moveSlot = modelResponse?.best_move?.slot;
-				const switchSlot = this.extractSwitchSlot(modelResponse);
+				const switchSlot = extractSwitchSlot(modelResponse);
 				if (modelResponse.type === "move" && moveSlot) {
 					rlAgentMetrics.actions.modelMoveChoices++;
 					this.choose(`move ${moveSlot}`);
@@ -299,7 +306,7 @@ export class RLAgentAI extends BattlePlayer {
 						rlAgentMetrics.actions.fallbackMoveChoices++;
 						this.choose(`move ${possibleMoves[0].slot}`);
 					} else {
-						const fallbackSlot = this.requestSlotForChoice(availableSwitches[0]);
+						const fallbackSlot = requestSlotForChoice(availableSwitches[0]);
 						if (fallbackSlot) {
 							rlAgentMetrics.actions.fallbackMoveTurnSwitchChoices++;
 							this.chooseSwitchLikeAction(fallbackSlot);
@@ -321,39 +328,13 @@ export class RLAgentAI extends BattlePlayer {
 	 * Sends battle state to Python model
 	 */
 	private async queryModel(modelData: any): Promise<any> {
-		let responseStatus: number | undefined;
-		let responseStatusText: string | undefined;
-		let responseBody: string | undefined;
 		const requestStart = Date.now();
 		let succeeded = false;
 
 		try {
-			const response = await fetch(this.endpoint, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(modelData),
-			});
-
-			responseStatus = response.status;
-			responseStatusText = response.statusText;
-			responseBody = await response.text();
-
-			if (!response.ok) {
-				throw new Error(`Model request failed: ${response.status}`);
-			}
-
-			try {
-				const parsedResponse = responseBody ? JSON.parse(responseBody) : null;
-				this.lastModelData = modelData;
-				this.lastModelResponse = parsedResponse;
-				succeeded = true;
-				return parsedResponse;
-			} catch {
-				throw new Error("Model response was not valid JSON.");
-			}
-		} catch (error) {
-			this.logModelExchange(modelData, responseStatus, responseStatusText, responseBody);
-			throw error;
+			const response = await this.modelClient.query(modelData, data => this.describeErrorSide(data));
+			succeeded = true;
+			return response;
 		} finally {
 			recordTiming(rlAgentMetrics.modelRequests, Date.now() - requestStart);
 			if (succeeded) rlAgentMetrics.modelRequestSuccesses++;
@@ -361,29 +342,7 @@ export class RLAgentAI extends BattlePlayer {
 		}
 	}
 
-	private logModelExchange(
-		modelData: any,
-		responseStatus?: number,
-		responseStatusText?: string,
-		responseBody?: string,
-	) {
-		console.error("Model exchange failed.");
-		if (this.modelID) console.error(`Model ID: ${this.modelID}`);
-		console.error(`Model profile: ${this.modelProfile}`);
-		console.error(`Endpoint: ${this.endpoint}`);
-		console.error("Request payload:");
-		console.error(this.stringifyForLog(modelData));
-		if (responseStatus !== undefined) {
-			console.error(`Response status: ${responseStatus} ${responseStatusText || ""}`.trim());
-		} else {
-			console.error("Response status: unavailable");
-		}
-		console.error("Response body:");
-		console.error(responseBody && responseBody.length ? responseBody : "<empty>");
-		console.error(`Error side: ${this.describeErrorSide(modelData)}`);
-	}
-
-	private describeErrorSide(modelData: AnyObject | null = this.lastModelData): string {
+	private describeErrorSide(modelData: AnyObject | null = this.modelClient.lastRequest): string {
 		const side = modelData?.side;
 		const sideID = side?.id || this.lastRequestSide;
 		const sideName = side?.name;
@@ -411,61 +370,13 @@ export class RLAgentAI extends BattlePlayer {
 		}
 	}
 
-	private getPrimaryActivePokemon(team: AnyObject[]): AnyObject | undefined {
-		return team.find(pokemon => !!pokemon.active) || team[0];
-	}
-
-	private hasReviveSelectionRequest(team: AnyObject[]): boolean {
-		return team.some(pokemon => !!pokemon.active && !!pokemon.reviving);
-	}
-
-	private buildLegalSwitchTargets(player: "p1" | "p2", team: AnyObject[]): AnyObject[] {
-		return team
-			.map((pokemon, i) => ({
-				slot: this.tracker.getOwnStableSlot(player, pokemon.ident, pokemon.details) || i + 1,
-				request_slot: i + 1,
-				ident: pokemon.ident,
-				details: pokemon.details,
-				condition: pokemon.condition,
-				active: !!pokemon.active,
-				fainted: pokemon.condition.endsWith(" fnt"),
-				reviving: !!pokemon.reviving,
-				canSwitch: !pokemon.active && !pokemon.condition.endsWith(" fnt"),
-			}))
-			.filter(target => target.canSwitch);
-	}
-
-	private buildLegalReviveTargets(player: "p1" | "p2", team: AnyObject[]): AnyObject[] {
-		return team
-			.map((pokemon, i) => ({
-				slot: this.tracker.getOwnStableSlot(player, pokemon.ident, pokemon.details) || i + 1,
-				request_slot: i + 1,
-				ident: pokemon.ident,
-				details: pokemon.details,
-				condition: pokemon.condition,
-				active: !!pokemon.active,
-				fainted: pokemon.condition.endsWith(" fnt"),
-				reviving: !!pokemon.reviving,
-				canRevive: pokemon.condition.endsWith(" fnt"),
-			}))
-			.filter(target => target.canRevive);
-	}
-
 	private chooseSwitchLikeAction(slot: number) {
 		// Revival Blessing target selection is routed through the switch chooser in Side#choose.
 		this.choose(`switch ${slot}`);
 	}
 
-	private requestSlotForChoice(choice: AnyObject | undefined): number | undefined {
-		return choice?.request_slot ?? choice?.slot;
-	}
-
-	private extractSwitchSlot(modelResponse: any): number | undefined {
-		return this.requestSlotForChoice(modelResponse?.best_switch) ??
-			this.requestSlotForChoice(modelResponse?.best_revive) ??
-			modelResponse?.slot ??
-			modelResponse?.best_switch?.slot ??
-			modelResponse?.best_revive?.slot;
+	private getStableSlot = (player: "p1" | "p2", ident?: string, details?: string) => {
+		return this.tracker.getOwnStableSlot(player, ident, details);
 	}
 	protected chooseTeamPreview(team: AnyObject[]): string {
 		return `default`;

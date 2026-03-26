@@ -78,3 +78,5 @@ state_vector.json
 model_data.json
 legalMoves.json
 legalSwitches.json
+logs/audio-reactions/
+logs/codex-agent-timing/

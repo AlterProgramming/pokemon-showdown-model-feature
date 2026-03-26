@@ -1,4 +1,7 @@
 param(
+    [string]$ServerHost = '127.0.0.1',
+    [int]$ServerPort = 5000,
+    [string]$ServerModelIDs = '',
     [int]$TotalGames = 100,
     [int]$Concurrency = 5,
     [int]$BattleTimeoutMs = 180000,
@@ -7,18 +10,28 @@ param(
     [string]$ReplayCaptureMode = 'none',
     [int]$ReplayCaptureCount = 0,
     [string]$ReplayOutputDir = 'logs\replays',
+    [switch]$ReplayGrid,
+    [int]$ReplayGridRefreshSeconds = 2,
+    [string]$ReplayGridFileName = '',
     [string]$ModelAName = 'Model1',
     [string]$ModelAID = 'model1',
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'custom')]
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
     [string]$ModelAProfile = 'move-only',
     [ValidateSet('default', 'yes', 'no')]
     [string]$ModelAAllowVoluntarySwitches = 'default',
     [string]$ModelBName = 'Model2',
     [string]$ModelBID = 'model2',
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'custom')]
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
     [string]$ModelBProfile = 'joint-policy',
     [ValidateSet('default', 'yes', 'no')]
     [string]$ModelBAllowVoluntarySwitches = 'default',
+    [double]$RequestTimeoutSeconds = 15.0,
+    [int]$WorkerMaxRequests = 5000,
+    [double]$WorkerMaxAgeSeconds = 3600.0,
+    [int]$WorkersPerModel = 1,
+    [string]$ModelWorkerOverrides = '',
+    [double]$WorkerBootstrapTimeoutSeconds = 30.0,
+    [double]$WorkerStartupTimeoutSeconds = 120.0,
     [string]$LogPrefix = '',
     [switch]$Build,
     [switch]$LeaveServerRunning
@@ -36,6 +49,12 @@ $serverOutLog = Join-Path $repoRoot "logs\$LogPrefix.server.out.log"
 $serverErrLog = Join-Path $repoRoot "logs\$LogPrefix.server.err.log"
 $runnerLog = Join-Path $repoRoot "logs\$LogPrefix.runner.log"
 $stateFile = Join-Path $repoRoot "logs\$LogPrefix.server.state.json"
+$runnerHost = if ($ServerHost -in @('0.0.0.0', '::')) { '127.0.0.1' } else { $ServerHost }
+$serverEndpoint = "http://$($runnerHost):$ServerPort/predict"
+$resolvedServerModelIDs = $ServerModelIDs
+if (-not $resolvedServerModelIDs) {
+    $resolvedServerModelIDs = (@($ModelAID, $ModelBID) | Where-Object { $_ } | Select-Object -Unique) -join ','
+}
 
 if (Test-Path $stateFile) {
     Write-Host "[benchmark] Found stale server state. Stopping previous benchmark server first." -ForegroundColor Yellow
@@ -44,12 +63,23 @@ if (Test-Path $stateFile) {
 
 & (Join-Path $PSScriptRoot 'start-model-server.ps1') `
     -ModelVariant multi `
+    -ModelIDs $resolvedServerModelIDs `
+    -ListenHost $ServerHost `
+    -Port $ServerPort `
+    -RequestTimeoutSeconds $RequestTimeoutSeconds `
+    -WorkerMaxRequests $WorkerMaxRequests `
+    -WorkerMaxAgeSeconds $WorkerMaxAgeSeconds `
+    -WorkersPerModel $WorkersPerModel `
+    -ModelWorkerOverrides $ModelWorkerOverrides `
+    -WorkerBootstrapTimeoutSeconds $WorkerBootstrapTimeoutSeconds `
+    -WorkerStartupTimeoutSeconds $WorkerStartupTimeoutSeconds `
     -Background `
     -StdoutLogPath $serverOutLog `
     -StderrLogPath $serverErrLog `
     -StateFilePath $stateFile
 if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+    $global:LASTEXITCODE = $LASTEXITCODE
+    return
 }
 
 try {
@@ -61,10 +91,14 @@ try {
         -ReplayCaptureMode $ReplayCaptureMode `
         -ReplayCaptureCount $ReplayCaptureCount `
         -ReplayOutputDir $ReplayOutputDir `
+        -ReplayGrid:$ReplayGrid `
+        -ReplayGridRefreshSeconds $ReplayGridRefreshSeconds `
+        -ReplayGridFileName $ReplayGridFileName `
         -ModelAName $ModelAName `
         -ModelAID $ModelAID `
         -ModelAProfile $ModelAProfile `
         -ModelAAllowVoluntarySwitches $ModelAAllowVoluntarySwitches `
+        -ModelServerEndpoint $serverEndpoint `
         -ModelBName $ModelBName `
         -ModelBID $ModelBID `
         -ModelBProfile $ModelBProfile `
@@ -81,4 +115,5 @@ try {
 Write-Host "[benchmark] Runner log: $runnerLog" -ForegroundColor Cyan
 Write-Host "[benchmark] Server stdout: $serverOutLog" -ForegroundColor DarkGray
 Write-Host "[benchmark] Server stderr: $serverErrLog" -ForegroundColor DarkGray
-exit $runnerExitCode
+$global:LASTEXITCODE = $runnerExitCode
+return

@@ -1,11 +1,14 @@
+import * as path from "path";
 import {BattleStream, getPlayerStreams, Teams} from "..";
 import {getRLAgentMetrics, resetRLAgentMetrics, RLAgentAI} from "../tools/rl-agent";
 import {parseBooleanOption, resolveRLModelProfileConfig, type RLModelProfileConfig} from "../tools/rl-model-profiles";
 import {
 	parseReplayCaptureMode,
 	saveReplayHtml,
+	saveReplayDashboardHtml,
 	sanitizeReplayFileSegment,
 	shouldCaptureReplay,
+	type ReplayDashboardTile,
 	type ReplayOutcome,
 } from "../tools/replay-export";
 
@@ -40,9 +43,13 @@ const MAX_FAILED_GAMES = Number(process.env.MAX_FAILED_GAMES || 10);
 const REPLAY_CAPTURE_MODE = parseReplayCaptureMode(process.env.REPLAY_CAPTURE_MODE);
 const REPLAY_CAPTURE_COUNT = Number(process.env.REPLAY_CAPTURE_COUNT || 0);
 const REPLAY_OUTPUT_DIR = process.env.REPLAY_OUTPUT_DIR || "logs/replays";
+const REPLAY_GRID = parseBooleanOption(process.env.REPLAY_GRID) ?? false;
+const REPLAY_GRID_REFRESH_SECONDS = Number(process.env.REPLAY_GRID_REFRESH_SECONDS || 2);
+const REPLAY_GRID_FILE_NAME = process.env.REPLAY_GRID_FILE_NAME || "model-vs-model-grid.html";
 const DEFAULT_ENDPOINT = process.env.MODEL_SERVER_ENDPOINT || "http://127.0.0.1:5000/predict";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000);
 const activeBattleAborters = new Map<number, (reason?: string) => void>();
+const replayDashboardTiles: ReplayDashboardTile[] = [];
 
 function getEndpoint(prefix: "MODEL_A" | "MODEL_B"): string {
 	return process.env[`${prefix}_ENDPOINT`] || DEFAULT_ENDPOINT;
@@ -384,6 +391,51 @@ function replayOutcomeForResult(result: BattleResult): ReplayOutcome {
 	return "tie";
 }
 
+function updateReplayDashboard() {
+	if (!REPLAY_GRID) return;
+	saveReplayDashboardHtml({
+		outputDir: REPLAY_OUTPUT_DIR,
+		fileName: REPLAY_GRID_FILE_NAME,
+		title: `${MODEL_A.name} vs ${MODEL_B.name} Replay Grid`,
+		tiles: replayDashboardTiles,
+		refreshSeconds: REPLAY_GRID_REFRESH_SECONDS,
+	});
+}
+
+function addReplayToDashboard(gameNumber: number, outcome: ReplayOutcome, replayPath: string) {
+	if (!REPLAY_GRID) return;
+	replayDashboardTiles.push({
+		slot: gameNumber,
+		label: `Game ${gameNumber}`,
+		title: `${MODEL_A.name} vs ${MODEL_B.name}`,
+		subtitle: `Outcome: ${outcome}`,
+		fileName: path.basename(replayPath),
+		status: "completed",
+	});
+	updateReplayDashboard();
+}
+
+function saveReplayForGrid(gameNumber: number, result: BattleResult) {
+	if (!REPLAY_GRID) return;
+	const outcome = replayOutcomeForResult(result);
+	const fileStem = [
+		"model-vs-model",
+		`game-${gameNumber}`,
+		outcome,
+		sanitizeReplayFileSegment(MODEL_A.modelID),
+		"vs",
+		sanitizeReplayFileSegment(MODEL_B.modelID),
+	].join("-");
+	const replayPath = saveReplayHtml({
+		outputDir: REPLAY_OUTPUT_DIR,
+		fileStem,
+		battleLog: result.replayLog,
+		title: `${MODEL_A.name} vs ${MODEL_B.name} - Game ${gameNumber}`,
+		autoplayMuted: true,
+	});
+	addReplayToDashboard(gameNumber, outcome, replayPath);
+}
+
 function maybeSaveReplay(gameNumber: number, result: BattleResult) {
 	if (!REPLAY_CAPTURE_COUNT || savedReplays >= REPLAY_CAPTURE_COUNT) return;
 	const outcome = replayOutcomeForResult(result);
@@ -420,6 +472,10 @@ process.on("SIGINT", () => {
 
 async function runExperiment() {
 	resetRLAgentMetrics();
+	if (REPLAY_GRID) {
+		updateReplayDashboard();
+		console.log(`[replay-grid] Dashboard: ${path.resolve(REPLAY_OUTPUT_DIR, REPLAY_GRID_FILE_NAME)}`);
+	}
 	let runningGames = 0;
 	const heartbeatHandle = setInterval(() => {
 		printHeartbeat(runningGames);
@@ -437,6 +493,7 @@ async function runExperiment() {
 			switches.modelA += result.switches.modelA;
 			switches.modelB += result.switches.modelB;
 			forcedDrags += result.forcedDrags;
+			saveReplayForGrid(gameNumber, result);
 			maybeSaveReplay(gameNumber, result);
 			seatGames[result.assignment.p1.key].p1++;
 			seatGames[result.assignment.p2.key].p2++;

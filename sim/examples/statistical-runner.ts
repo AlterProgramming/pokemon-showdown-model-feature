@@ -1,3 +1,4 @@
+import * as path from "path";
 import {BattleStream, getPlayerStreams, Teams} from "..";
 import {RandomPlayerAI} from "../tools/random-player-ai";
 import {getRLAgentMetrics, resetRLAgentMetrics, RLAgentAI} from "../tools/rl-agent";
@@ -5,8 +6,10 @@ import {parseBooleanOption, resolveRLModelProfileConfig} from "../tools/rl-model
 import {
 	parseReplayCaptureMode,
 	saveReplayHtml,
+	saveReplayDashboardHtml,
 	sanitizeReplayFileSegment,
 	shouldCaptureReplay,
+	type ReplayDashboardTile,
 	type ReplayOutcome,
 } from "../tools/replay-export";
 
@@ -32,8 +35,13 @@ const MAX_FAILED_GAMES = Number(process.env.MAX_FAILED_GAMES || 10);
 const REPLAY_CAPTURE_MODE = parseReplayCaptureMode(process.env.REPLAY_CAPTURE_MODE);
 const REPLAY_CAPTURE_COUNT = Number(process.env.REPLAY_CAPTURE_COUNT || 0);
 const REPLAY_OUTPUT_DIR = process.env.REPLAY_OUTPUT_DIR || "logs/replays";
+const REPLAY_GRID = parseBooleanOption(process.env.REPLAY_GRID) ?? false;
+const REPLAY_GRID_REFRESH_SECONDS = Number(process.env.REPLAY_GRID_REFRESH_SECONDS || 2);
+const REPLAY_GRID_FILE_NAME = process.env.REPLAY_GRID_FILE_NAME || "random-vs-model-grid.html";
+const RL_MODEL_ENDPOINT = process.env.RL_MODEL_ENDPOINT || "http://127.0.0.1:5000/predict";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000);
 const activeBattleAborters = new Map<number, (reason?: string) => void>();
+const replayDashboardTiles: ReplayDashboardTile[] = [];
 
 function createBattleTimeoutError(gameNumber: number): Error {
 	return new Error(`Battle ${gameNumber} timed out after ${formatDurationMs(BATTLE_TIMEOUT_MS)}.`);
@@ -81,6 +89,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 
 	const p1 = new RandomPlayerAI(streams.p1);
 	const p2 = new RLAgentAI(streams.p2, {
+		endpoint: RL_MODEL_ENDPOINT,
 		modelProfile: RL_PROFILE.profile,
 		allowVoluntarySwitches: RL_PROFILE.allowVoluntarySwitches,
 	});
@@ -219,6 +228,7 @@ function printStats() {
 	console.log(`RL Model Profile: ${RL_PROFILE.profile}`);
 	console.log(`Profile Description: ${RL_PROFILE.description}`);
 	console.log(`Voluntary Switches Enabled: ${RL_PROFILE.allowVoluntarySwitches ? "yes" : "no"}`);
+	console.log(`RL Model Endpoint: ${RL_MODEL_ENDPOINT}`);
 	console.log(`Completed Games: ${completed}`);
 	console.log(`RL Wins: ${rlWins}`);
 	console.log(`Random Wins: ${randomWins}`);
@@ -331,6 +341,49 @@ function replayOutcomeForResult(result: BattleResult): ReplayOutcome {
 	return "tie";
 }
 
+function updateReplayDashboard() {
+	if (!REPLAY_GRID) return;
+	saveReplayDashboardHtml({
+		outputDir: REPLAY_OUTPUT_DIR,
+		fileName: REPLAY_GRID_FILE_NAME,
+		title: `Random vs RL Replay Grid (${RL_PROFILE.profile})`,
+		tiles: replayDashboardTiles,
+		refreshSeconds: REPLAY_GRID_REFRESH_SECONDS,
+	});
+}
+
+function addReplayToDashboard(gameNumber: number, outcome: ReplayOutcome, replayPath: string) {
+	if (!REPLAY_GRID) return;
+	replayDashboardTiles.push({
+		slot: gameNumber,
+		label: `Game ${gameNumber}`,
+		title: `Random vs RL (${RL_PROFILE.profile})`,
+		subtitle: `Outcome: ${outcome}`,
+		fileName: path.basename(replayPath),
+		status: "completed",
+	});
+	updateReplayDashboard();
+}
+
+function saveReplayForGrid(gameNumber: number, result: BattleResult) {
+	if (!REPLAY_GRID) return;
+	const outcome = replayOutcomeForResult(result);
+	const fileStem = [
+		"random-vs-model",
+		`game-${gameNumber}`,
+		outcome,
+		sanitizeReplayFileSegment(RL_PROFILE.profile),
+	].join("-");
+	const replayPath = saveReplayHtml({
+		outputDir: REPLAY_OUTPUT_DIR,
+		fileStem,
+		battleLog: result.replayLog,
+		title: `Random vs RL (${RL_PROFILE.profile}) - Game ${gameNumber}`,
+		autoplayMuted: true,
+	});
+	addReplayToDashboard(gameNumber, outcome, replayPath);
+}
+
 function maybeSaveReplay(gameNumber: number, result: BattleResult) {
 	if (!REPLAY_CAPTURE_COUNT || savedReplays >= REPLAY_CAPTURE_COUNT) return;
 	const outcome = replayOutcomeForResult(result);
@@ -365,6 +418,10 @@ process.on("SIGINT", () => {
 
 async function runExperiment() {
 	resetRLAgentMetrics();
+	if (REPLAY_GRID) {
+		updateReplayDashboard();
+		console.log(`[replay-grid] Dashboard: ${path.resolve(REPLAY_OUTPUT_DIR, REPLAY_GRID_FILE_NAME)}`);
+	}
 	let runningGames = 0;
 	const heartbeatHandle = setInterval(() => {
 		printHeartbeat(runningGames);
@@ -384,6 +441,7 @@ async function runExperiment() {
 			randomSwitches += result.randomSwitches;
 			rlSwitches += result.rlSwitches;
 			forcedDrags += result.forcedDrags;
+			saveReplayForGrid(gameNumber, result);
 			maybeSaveReplay(gameNumber, result);
 
 			completed++;

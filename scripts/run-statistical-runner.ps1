@@ -7,8 +7,12 @@ param(
     [string]$ReplayCaptureMode = 'none',
     [int]$ReplayCaptureCount = 0,
     [string]$ReplayOutputDir = 'logs\replays',
+    [switch]$ReplayGrid,
+    [int]$ReplayGridRefreshSeconds = 2,
+    [string]$ReplayGridFileName = '',
     [string]$RLModelID = '',
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'custom')]
+    [string]$RLModelEndpoint = '',
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
     [string]$RLModelProfile = 'joint-policy',
     [ValidateSet('default', 'yes', 'no')]
     [string]$AllowVoluntarySwitches = 'default',
@@ -54,11 +58,29 @@ try {
     } else {
         $env:REPLAY_OUTPUT_DIR = Join-Path $repoRoot $ReplayOutputDir
     }
+    if ($ReplayGrid) {
+        $env:REPLAY_GRID = '1'
+        $env:REPLAY_GRID_REFRESH_SECONDS = "$ReplayGridRefreshSeconds"
+        if ($ReplayGridFileName) {
+            $env:REPLAY_GRID_FILE_NAME = $ReplayGridFileName
+        } else {
+            Remove-Item Env:REPLAY_GRID_FILE_NAME -ErrorAction SilentlyContinue
+        }
+    } else {
+        Remove-Item Env:REPLAY_GRID -ErrorAction SilentlyContinue
+        Remove-Item Env:REPLAY_GRID_REFRESH_SECONDS -ErrorAction SilentlyContinue
+        Remove-Item Env:REPLAY_GRID_FILE_NAME -ErrorAction SilentlyContinue
+    }
     $env:RL_MODEL_PROFILE = $RLModelProfile
     if ($RLModelID) {
         $env:RL_MODEL_ID = $RLModelID
     } else {
         Remove-Item Env:RL_MODEL_ID -ErrorAction SilentlyContinue
+    }
+    if ($RLModelEndpoint) {
+        $env:RL_MODEL_ENDPOINT = $RLModelEndpoint
+    } else {
+        Remove-Item Env:RL_MODEL_ENDPOINT -ErrorAction SilentlyContinue
     }
     switch ($AllowVoluntarySwitches) {
     'yes' { $env:RL_ALLOW_VOLUNTARY_SWITCHES = '1' }
@@ -68,8 +90,15 @@ try {
 
     Write-Host "[runner] Repo: $repoRoot" -ForegroundColor DarkGray
     Write-Host "[runner] Profile: $RLModelProfile" -ForegroundColor DarkGray
+    if ($RLModelEndpoint) {
+        Write-Host "[runner] Endpoint: $RLModelEndpoint" -ForegroundColor DarkGray
+    }
     Write-Host "[runner] Games: $TotalGames  Concurrency: $Concurrency" -ForegroundColor DarkGray
     Write-Host "[runner] Log: $LogPath" -ForegroundColor DarkGray
+    if ($ReplayGrid) {
+        $gridFile = if ($ReplayGridFileName) { $ReplayGridFileName } else { 'random-vs-model-grid.html' }
+        Write-Host "[runner] Replay Grid: $(Join-Path $env:REPLAY_OUTPUT_DIR $gridFile)" -ForegroundColor DarkGray
+    }
 
     if (Test-Path $LogPath) {
         Remove-Item $LogPath -Force
