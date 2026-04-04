@@ -14,7 +14,15 @@ PS has other useful command-line invocations, which you can investigate with `./
 
 Unit tests can be run with `npm test`. You can run specific unit tests with `npx mocha -g "text"`, which will run all unit tests whose name contains "text", or you can just edit the unit test from `it` to `it.only`.
 
-Packaging for npm is done by running `./build decl && npm publish`. Only Zarel has the NPM credentials to do this, but feel free to request a new NPM package if you need something.
+If you're testing on Windows, `TEST_RUNBOOK.md` has the narrow-file mocha command and the common native-module compatibility warnings.
+
+If you're using multiple mini agents on the same problem, `MULTI_AGENT_WORKFLOW.md` captures the coordination rules that help keep the edits safe and the reasoning focused.
+
+`BEST_PRACTICES.md` is the lighter-weight companion note that spells out the working style we want agents to keep using during a task.
+
+`AGENT_ROSTER.md` is the running list of mini-agent nicknames and what they worked on, kept separate from the real project contributors.
+
+Packaging for npm is done by running `./build decl && npm publish`. Publishing is restricted to the project maintainers, but feel free to request a new NPM package if you need something.
 
 
 Contributing
@@ -247,7 +255,7 @@ Our current quote convention is to use:
 - `'` as in `'fireblast'` for any string not meant to be displayed to the user; i.e. IDs
 - `"` as in `"Fire Blast"` for any string meant to be displayed verbatim to the user; i.e. names (i.e. usernames, move names, etc), most English text, and help entries of chat commands
 
-As far as I know, we don't use strings for anything else, but if you need to use strings in a way that doesn't conform to the above three, ask Zarel on Discord to decide (and default to `` ` `` in lieu of a decision).
+As far as I know, we don't use strings for anything else, but if you need to use strings in a way that doesn't conform to the above three, ask the project maintainers on Discord to decide (and default to `` ` `` in lieu of a decision).
 
 Unfortunately, since this is not a convention the linter can test for (and also because our older string standards predate PS), a lot of existing code is wrong on this, so you can't look at surrounding code to get an idea of what the convention should be. Refer to the above paragraph as the definitive rule.
 

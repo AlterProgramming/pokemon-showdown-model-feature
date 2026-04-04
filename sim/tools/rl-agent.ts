@@ -9,6 +9,7 @@
 import type { ObjectReadWriteStream } from "../../lib/streams";
 import { BattlePlayer } from "../battle-stream";
 import type { ChoiceRequest } from "../side";
+import type { PRNGSeed } from "../prng";
 import { ProtocolStateTracker } from "./protocol-state-tracker";
 import {parseBooleanOption, resolveRLModelProfileConfig, type RLModelProfile} from "./rl-model-profiles";
 import { RLModelClient } from "./rl-model-client";
@@ -21,6 +22,25 @@ import {
 	hasReviveSelectionRequest,
 	requestSlotForChoice,
 } from "./rl-action-helpers";
+
+export type RLAgentDecisionKind = "move" | "forceSwitch" | "teamPreview";
+export type RLAgentDecisionRecord = {
+	modelCheckpointId?: string;
+	battleId?: string;
+	recordedAt: string;
+	perspectivePlayer: "p1" | "p2";
+	requestKind: RLAgentDecisionKind;
+	modelRequest: AnyObject | null;
+	modelResponse: AnyObject | null;
+	chosenAction: string;
+	usedFallback: boolean;
+	format?: string;
+	seed?: PRNGSeed | string | null;
+	teamId?: string;
+	opponentModelId?: string;
+	opponentTeamId?: string;
+	result?: "win" | "loss" | "tie" | "timeout" | "error";
+};
 
 type TimingMetric = {
 	count: number;
@@ -157,6 +177,7 @@ export class RLAgentAI extends BattlePlayer {
 	private readonly modelProfile: RLModelProfile;
 	private readonly allowVoluntarySwitches: boolean;
 	private readonly modelClient: RLModelClient;
+	private readonly onDecision: ((record: RLAgentDecisionRecord) => void) | undefined;
 	private tracker = new ProtocolStateTracker();
 	private lastRequestSide: string | undefined;
 	constructor(
@@ -166,6 +187,7 @@ export class RLAgentAI extends BattlePlayer {
 			modelID?: string;
 			modelProfile?: RLModelProfile;
 			allowVoluntarySwitches?: boolean;
+			onDecision?: (record: RLAgentDecisionRecord) => void;
 		} = {},
 		debug = false,
 	) {
@@ -179,6 +201,7 @@ export class RLAgentAI extends BattlePlayer {
 		this.modelID = modelID;
 		this.modelProfile = profileConfig.profile;
 		this.allowVoluntarySwitches = profileConfig.allowVoluntarySwitches;
+		this.onDecision = options.onDecision;
 		this.modelClient = new RLModelClient({
 			endpoint,
 			modelID,
@@ -219,16 +242,28 @@ export class RLAgentAI extends BattlePlayer {
 				const legalSwitches = hasReviveRequest ? [] : buildLegalSwitchTargets(request.side.id, pokemon, this.getStableSlot);
 				const legalRevives = hasReviveRequest ? buildLegalReviveTargets(request.side.id, pokemon, this.getStableSlot) : [];
 				const fallbackTargets = legalRevives.length ? legalRevives : legalSwitches;
+				const recordedAt = new Date().toISOString();
 
 				if (!fallbackTargets.length) {
 					rlAgentMetrics.actions.passChoices++;
+					this.captureDecision({
+						recordedAt,
+						perspectivePlayer: perspective,
+						requestKind: "forceSwitch",
+						modelRequest: null,
+						modelResponse: null,
+						chosenAction: "pass",
+						usedFallback: true,
+					});
 					this.choose("pass");
 					return;
 				}
-				const stateVector = this.buildStateVector(perspective);
+				const {snapshot, stateVector} = this.buildModelState(perspective);
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
 					state_vector: stateVector,
+					battle_state: snapshot,
+					perspective_player: perspective,
 					legal_moves: [],
 					legal_switches: legalSwitches,
 					legal_revives: legalRevives,
@@ -242,14 +277,41 @@ export class RLAgentAI extends BattlePlayer {
 				if ((action.type === "switch" || action.type === "revive") && switchSlot) {
 					if (action.type === "revive") rlAgentMetrics.actions.modelReviveChoices++;
 					else rlAgentMetrics.actions.modelForceSwitchChoices++;
+					this.captureDecision({
+						recordedAt,
+						perspectivePlayer: perspective,
+						requestKind: "forceSwitch",
+						modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+						modelResponse: this.cloneForCapture(action),
+						chosenAction: `switch ${switchSlot}`,
+						usedFallback: false,
+					});
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
 					const fallbackSlot = requestSlotForChoice(fallbackTargets[0]);
 					if (fallbackSlot) {
 						rlAgentMetrics.actions.fallbackForceSwitchChoices++;
+						this.captureDecision({
+							recordedAt,
+							perspectivePlayer: perspective,
+							requestKind: "forceSwitch",
+							modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+							modelResponse: this.cloneForCapture(action),
+							chosenAction: `switch ${fallbackSlot}`,
+							usedFallback: true,
+						});
 						this.chooseSwitchLikeAction(fallbackSlot);
 					} else {
 						rlAgentMetrics.actions.passChoices++;
+						this.captureDecision({
+							recordedAt,
+							perspectivePlayer: perspective,
+							requestKind: "forceSwitch",
+							modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+							modelResponse: this.cloneForCapture(action),
+							chosenAction: "pass",
+							usedFallback: true,
+						});
 						this.choose("pass");
 					}
 				}
@@ -257,6 +319,15 @@ export class RLAgentAI extends BattlePlayer {
 				return;
 			} else if (request.teamPreview) {
 				rlAgentMetrics.actions.teamPreviewRequests++;
+				this.captureDecision({
+					recordedAt: new Date().toISOString(),
+					perspectivePlayer: perspective,
+					requestKind: "teamPreview",
+					modelRequest: null,
+					modelResponse: null,
+					chosenAction: "default",
+					usedFallback: false,
+				});
 				this.choose(this.chooseTeamPreview(request.side.pokemon));
 			}
 
@@ -280,10 +351,12 @@ export class RLAgentAI extends BattlePlayer {
 				if (!this.allowVoluntarySwitches && availableSwitches.length) {
 					rlAgentMetrics.actions.voluntarySwitchOptionsSuppressed++;
 				}
-				const stateVector = this.buildStateVector(perspective);
+				const {snapshot, stateVector} = this.buildModelState(perspective);
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
 					state_vector: stateVector,
+					battle_state: snapshot,
+					perspective_player: perspective,
 					legal_moves: possibleMoves,
 					legal_switches: canSwitch,
 					active: request.active,
@@ -295,23 +368,68 @@ export class RLAgentAI extends BattlePlayer {
 				const switchSlot = extractSwitchSlot(modelResponse);
 				if (modelResponse.type === "move" && moveSlot) {
 					rlAgentMetrics.actions.modelMoveChoices++;
+					this.captureDecision({
+						recordedAt: new Date().toISOString(),
+						perspectivePlayer: perspective,
+						requestKind: "move",
+						modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+						modelResponse: this.cloneForCapture(modelResponse),
+						chosenAction: `move ${moveSlot}`,
+						usedFallback: false,
+					});
 					this.choose(`move ${moveSlot}`);
 				} else if ((modelResponse.type === "switch" || modelResponse.type === "revive") && switchSlot) {
 					if (modelResponse.type === "revive") rlAgentMetrics.actions.modelReviveChoices++;
 					else rlAgentMetrics.actions.modelVoluntarySwitchChoices++;
+					this.captureDecision({
+						recordedAt: new Date().toISOString(),
+						perspectivePlayer: perspective,
+						requestKind: "move",
+						modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+						modelResponse: this.cloneForCapture(modelResponse),
+						chosenAction: `switch ${switchSlot}`,
+						usedFallback: false,
+					});
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
 					// safe fallback
 					if (possibleMoves.length) {
 						rlAgentMetrics.actions.fallbackMoveChoices++;
+						this.captureDecision({
+							recordedAt: new Date().toISOString(),
+							perspectivePlayer: perspective,
+							requestKind: "move",
+							modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+							modelResponse: this.cloneForCapture(modelResponse),
+							chosenAction: `move ${possibleMoves[0].slot}`,
+							usedFallback: true,
+						});
 						this.choose(`move ${possibleMoves[0].slot}`);
 					} else {
 						const fallbackSlot = requestSlotForChoice(availableSwitches[0]);
 						if (fallbackSlot) {
 							rlAgentMetrics.actions.fallbackMoveTurnSwitchChoices++;
+							this.captureDecision({
+								recordedAt: new Date().toISOString(),
+								perspectivePlayer: perspective,
+								requestKind: "move",
+								modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+								modelResponse: this.cloneForCapture(modelResponse),
+								chosenAction: `switch ${fallbackSlot}`,
+								usedFallback: true,
+							});
 							this.chooseSwitchLikeAction(fallbackSlot);
 						} else {
 							rlAgentMetrics.actions.passChoices++;
+							this.captureDecision({
+								recordedAt: new Date().toISOString(),
+								perspectivePlayer: perspective,
+								requestKind: "move",
+								modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
+								modelResponse: this.cloneForCapture(modelResponse),
+								chosenAction: "pass",
+								usedFallback: true,
+							});
 							this.choose("pass");
 						}
 					}
@@ -360,11 +478,14 @@ export class RLAgentAI extends BattlePlayer {
 		}
 	}
 
-	private buildStateVector(perspective: "p1" | "p2"): number[] {
+	private buildModelState(perspective: "p1" | "p2"): {snapshot: AnyObject, stateVector: number[]} {
 		const buildStart = Date.now();
 		try {
 			const snapshot = this.tracker.getSnapshot();
-			return this.tracker.encodeState(snapshot, perspective);
+			return {
+				snapshot,
+				stateVector: this.tracker.encodeState(snapshot, perspective),
+			};
 		} finally {
 			recordTiming(rlAgentMetrics.stateVectorBuilds, Date.now() - buildStart);
 		}
@@ -380,5 +501,18 @@ export class RLAgentAI extends BattlePlayer {
 	}
 	protected chooseTeamPreview(team: AnyObject[]): string {
 		return `default`;
+	}
+
+	private captureDecision(record: RLAgentDecisionRecord) {
+		this.onDecision?.(record);
+	}
+
+	private cloneForCapture(value: AnyObject | null) {
+		if (!value) return null;
+		try {
+			return JSON.parse(JSON.stringify(value));
+		} catch {
+			return value;
+		}
 	}
 }

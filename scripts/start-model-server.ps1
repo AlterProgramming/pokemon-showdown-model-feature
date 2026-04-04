@@ -33,7 +33,7 @@ $registryPath = Join-Path $RepoPath 'artifacts\model_registry.json'
 $registeredVariants = @()
 if (Test-Path $registryPath) {
     try {
-        $registry = Get-Content $registryPath -Raw | ConvertFrom-Json -Depth 8
+        $registry = Get-Content $registryPath -Raw | ConvertFrom-Json
         $registeredVariants = @($registry.models.PSObject.Properties.Name)
     } catch {
         Write-Warning "Failed to parse model registry at $registryPath. Continuing without wrapper-side validation."
@@ -117,11 +117,8 @@ if ($requestedModelIDs.Count) {
     $pythonArgs += @('--model-ids', ($requestedModelIDs -join ','))
 }
 
-function Wait-ForModelServerReady {
-    param([int]$TimeoutSeconds = 30)
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $warmupPayload = @{
+function New-VectorWarmupPayload {
+    return @{
         state_vector = @(for ($i = 0; $i -lt 582; $i++) { 0 })
         legal_moves = @(
             @{
@@ -133,15 +130,119 @@ function Wait-ForModelServerReady {
         )
         legal_switches = @()
     } | ConvertTo-Json -Depth 6
+}
 
+function New-EntityWarmupPayload {
+    $boosts = @{
+        atk = 0
+        def = 0
+        spa = 0
+        spd = 0
+        spe = 0
+        accuracy = 0
+        evasion = 0
+    }
+
+    return @{
+        battle_state = @{
+            turn_index = 1
+            field = @{
+                weather = $null
+                global_conditions = @()
+            }
+            p1 = @{
+                active_uid = 'p1a'
+                slots = @('p1a', $null, $null, $null, $null, $null)
+                side_conditions = @{}
+            }
+            p2 = @{
+                active_uid = 'p2a'
+                slots = @('p2a', $null, $null, $null, $null, $null)
+                side_conditions = @{}
+            }
+            mons = @{
+                p1a = @{
+                    uid = 'p1a'
+                    player = 'p1'
+                    species = 'Pikachu'
+                    hp_frac = 1.0
+                    status = $null
+                    ability = $null
+                    item = $null
+                    tera_type = $null
+                    terastallized = $false
+                    public_revealed = $true
+                    fainted = $false
+                    boosts = $boosts
+                    observed_moves = @('thunderbolt')
+                }
+                p2a = @{
+                    uid = 'p2a'
+                    player = 'p2'
+                    species = 'Eevee'
+                    hp_frac = 1.0
+                    status = $null
+                    ability = $null
+                    item = $null
+                    tera_type = $null
+                    terastallized = $false
+                    public_revealed = $true
+                    fainted = $false
+                    boosts = $boosts
+                    observed_moves = @('tackle')
+                }
+            }
+        }
+        perspective_player = 'p1'
+        legal_moves = @(
+            @{
+                slot = 1
+                move = 'Tackle'
+                id = 'tackle'
+                disabled = $false
+            }
+        )
+        legal_switches = @()
+    } | ConvertTo-Json -Depth 12
+}
+
+function Get-ModelServerWarmupPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Health
+    )
+
+    if ($Health.default_entity_model_id) {
+        return New-EntityWarmupPayload
+    }
+
+    return New-VectorWarmupPayload
+}
+
+function Wait-ForModelServerReady {
+    param([int]$TimeoutSeconds = 30)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
+            $health = Invoke-RestMethod `
+                -Uri ("http://{0}:{1}/health" -f $readyCheckHost, $Port) `
+                -Method Get `
+                -TimeoutSec 5
+            if ($null -eq $health -or $health.status -ne 'ok') {
+                Start-Sleep -Seconds 1
+                continue
+            }
+
+            $warmupMode = if ($health.default_entity_model_id) { 'entity' } else { 'vector' }
+            Write-Host "[server] Warmup mode: $warmupMode" -ForegroundColor DarkGray
+
             $response = Invoke-WebRequest `
                 -Uri ("http://{0}:{1}/predict" -f $readyCheckHost, $Port) `
                 -Method Post `
                 -UseBasicParsing `
                 -ContentType 'application/json' `
-                -Body $warmupPayload `
+                -Body (Get-ModelServerWarmupPayload -Health $health) `
                 -TimeoutSec 5
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
                 return $true

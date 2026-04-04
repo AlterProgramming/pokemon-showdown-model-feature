@@ -1659,7 +1659,7 @@ export class GlobalRoomState {
 			for (const roomid of Config.reportbattles) {
 				const reportRoom = Rooms.get(roomid);
 				if (reportRoom) {
-					const reportPlayers = players.map(p => p.getIdentity()).join('|');
+					const reportPlayers = (options.reportPlayers || players.map(p => p.getIdentity())).join('|');
 					reportRoom
 						.add(`|b|${room.roomid}|${reportPlayers}`)
 						.update();
@@ -2186,22 +2186,23 @@ export const Rooms = {
 	 */
 	createBattle(options: RoomBattleOptions & Partial<RoomSettings>) {
 		const players = options.players.map(player => player.user);
+		const realPlayers = players.filter(Boolean) as User[];
 		const format = Dex.formats.get(options.format);
 		if (players.length > format.playerCount) {
 			throw new Error(`${players.length} players were provided, but the format is a ${format.playerCount}-player format.`);
 		}
-		if (new Set(players).size < players.length) {
+		if (new Set(realPlayers).size < realPlayers.length) {
 			throw new Error(`Players can't battle themselves`);
 		}
 
-		for (const user of players) {
+		for (const user of realPlayers) {
 			Ladders.cancelSearches(user);
 		}
 
 		const isBestOf = Dex.formats.getRuleTable(format).valueRules.get('bestof');
 
 		if (Rooms.global.lockdown === 'pre' && isBestOf && !options.isBestOfSubBattle) {
-			for (const user of players) {
+			for (const user of realPlayers) {
 				user.popup(`The server will be restarting soon. Best-of-${isBestOf} battles cannot be started at this time.`);
 			}
 			return null;
@@ -2209,15 +2210,15 @@ export const Rooms = {
 
 		// gotta allow new bo3 child battles to start
 		if (Rooms.global.lockdown === true && !options.isBestOfSubBattle) {
-			for (const user of players) {
+			for (const user of realPlayers) {
 				user.popup("The server is restarting. Battles will be available again in a few minutes.");
 			}
 			return null;
 		}
 
-		const p1Special = players.length ? players[0].battleSettings.special : undefined;
+		const p1Special = realPlayers.length ? realPlayers[0].battleSettings.special : undefined;
 		let mismatch = `"${p1Special}"`;
-		for (const user of players) {
+		for (const user of realPlayers) {
 			if (user.battleSettings.special !== p1Special) {
 				mismatch += ` vs. "${user.battleSettings.special}"`;
 			}
@@ -2225,7 +2226,7 @@ export const Rooms = {
 		}
 
 		if (mismatch !== `"${p1Special}"`) {
-			for (const user of players) {
+			for (const user of realPlayers) {
 				user.popup(`Your special battle settings don't match: ${mismatch}`);
 			}
 			return null;
@@ -2239,8 +2240,8 @@ export const Rooms = {
 		options.rated = Math.max(+options.rated! || 0, 0);
 		const p1 = players[0];
 		const p2 = players[1];
-		const p1name = p1 ? p1.name : "Player 1";
-		const p2name = p2 ? p2.name : "Player 2";
+		const p1name = p1 ? p1.name : (options.players[0]?.name || "Player 1");
+		const p2name = p2 ? p2.name : (options.players[1]?.name || "Player 2");
 		let roomTitle;
 		let roomid = options.roomid;
 		if (format.gameType === 'multi') {
@@ -2276,7 +2277,7 @@ export const Rooms = {
 			game.checkPrivacySettings(options);
 		}
 
-		for (const p of players) {
+		for (const p of realPlayers) {
 			if (p) {
 				p.joinRoom(room);
 				Monitor.countBattle(p.latestIp, p.name);

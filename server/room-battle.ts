@@ -12,18 +12,29 @@
  */
 
 import { execSync } from "child_process";
-import { ProcessManager, type Streams } from '../lib';
+import { ProcessManager, Streams } from '../lib';
 import { BattleStream } from "../sim/battle-stream";
+import { extractChannelMessages } from "../sim/battle";
+import { RLAgentAI } from "../sim/tools/rl-agent";
 import { RoomGamePlayer, RoomGame } from "./room-game";
 import * as ConfigLoader from './config-loader';
 import type { Tournament } from './tournaments/index';
 import type { RoomSettings } from './rooms';
 import type { BestOfGame } from './room-battle-bestof';
 import type { GameTimerSettings } from '../sim/dex-formats';
+import type { RLModelProfile } from '../sim/tools/rl-model-profiles';
 
 type ChannelIndex = 0 | 1 | 2 | 3 | 4;
 export type PlayerIndex = 1 | 2 | 3 | 4;
 export type ChallengeType = 'rated' | 'unrated' | 'challenge' | 'tour';
+
+export interface AutomatedBattlePlayerOptions {
+	type: 'rl-model';
+	endpoint?: string;
+	modelID?: string;
+	modelProfile?: RLModelProfile;
+	allowVoluntarySwitches?: boolean;
+}
 
 interface BattleRequestTracker {
 	rqid: number;
@@ -58,10 +69,13 @@ const LOCKDOWN_PERIOD = 30 * 60 * 1000; // 30 minutes
 export class RoomBattlePlayer extends RoomGamePlayer<RoomBattle> {
 	readonly slot: SideID;
 	readonly channelIndex: ChannelIndex;
+	avatar: string;
 	request: BattleRequestTracker;
 	wantsTie: boolean;
 	wantsOpenTeamSheets: boolean | null;
 	eliminated: boolean;
+	isAutomated: boolean;
+	automation: AutomatedBattlePlayerOptions | null;
 	/**
 	 * Total timer.
 	 *
@@ -120,12 +134,15 @@ export class RoomBattlePlayer extends RoomGamePlayer<RoomBattle> {
 
 		this.slot = `p${num}` as SideID;
 		this.channelIndex = (game.gameType === 'multi' && num > 2 ? num - 2 : num) as ChannelIndex;
+		this.avatar = user ? `${user.avatar}` : '';
 
 		this.request = { rqid: 0, request: '', isWait: 'cantUndo', choice: '' };
 		this.wantsTie = false;
 		this.wantsOpenTeamSheets = null;
 		this.active = !!user?.connected;
 		this.eliminated = false;
+		this.isAutomated = false;
+		this.automation = null;
 
 		this.secondsLeft = 1;
 		this.turnSecondsLeft = 1;
@@ -461,12 +478,15 @@ export class RoomBattleTimer {
 }
 
 export interface RoomBattlePlayerOptions {
-	user: User;
+	user: User | null;
+	name?: string;
+	avatar?: string;
 	/** should be '' for random teams */
 	team?: string;
 	rating?: number;
 	inviteOnly?: boolean;
 	hidden?: boolean;
+	automation?: AutomatedBattlePlayerOptions;
 }
 
 export interface RoomBattleOptions {
@@ -518,6 +538,8 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 	 */
 	readonly allowExtraction: { [k: string]: Set<ID> } = {};
 	readonly stream: Streams.ObjectReadWriteStream<string>;
+	readonly automatedPlayerStreams = new Map<SideID, Streams.ObjectReadWriteStream<string>>();
+	readonly automatedPlayers = new Map<SideID, RLAgentAI>();
 	override readonly timer: RoomBattleTimer;
 	started = false;
 	active = false;
@@ -607,6 +629,95 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		this.start();
 	}
 
+	private createAutomatedPlayer(player: RoomBattlePlayer) {
+		if (!player.automation || this.automatedPlayers.has(player.slot)) return;
+		const stream = new Streams.ObjectReadWriteStream<string>({
+			write: data => {
+				this.receiveAutomatedChoice(player, data);
+			},
+		});
+		const agent = new RLAgentAI(stream, {
+			endpoint: player.automation.endpoint,
+			modelID: player.automation.modelID,
+			modelProfile: player.automation.modelProfile,
+			allowVoluntarySwitches: player.automation.allowVoluntarySwitches,
+		});
+		this.automatedPlayerStreams.set(player.slot, stream);
+		this.automatedPlayers.set(player.slot, agent);
+		void agent.start().catch(err => {
+			Monitor.crashlog(err, 'A model battle controller', {
+				roomid: this.roomid,
+				slot: player.slot,
+				modelID: player.automation?.modelID,
+				endpoint: player.automation?.endpoint,
+			});
+			if (this.ended || player.eliminated) return;
+			this.room.add(`|-message|${player.name}'s model controller crashed.`).update();
+			this.forfeitPlayer(player, ' lost because its model controller crashed.');
+		});
+	}
+
+	private pushUpdateToAutomatedPlayers(updateLines: string[]) {
+		if (!this.automatedPlayerStreams.size) return;
+		const joined = updateLines.join('\n');
+		const channelMessages = extractChannelMessages(joined, [1, 2, 3, 4]);
+		for (const player of this.players) {
+			if (!player.isAutomated) continue;
+			const stream = this.automatedPlayerStreams.get(player.slot);
+			if (!stream) continue;
+			const message = channelMessages[player.channelIndex].join('\n');
+			if (message) stream.push(message);
+		}
+	}
+
+	private pushSideupdateToAutomatedPlayer(slot: SideID, sideUpdate: string) {
+		this.automatedPlayerStreams.get(slot)?.push(sideUpdate);
+	}
+
+	private destroyAutomatedPlayers() {
+		for (const agent of this.automatedPlayers.values()) {
+			agent.stop();
+		}
+		for (const stream of this.automatedPlayerStreams.values()) {
+			stream.pushEnd();
+		}
+		this.automatedPlayers.clear();
+		this.automatedPlayerStreams.clear();
+	}
+
+	private getPlayerIdentifier(player: RoomBattlePlayer) {
+		return player.id || toID(player.name);
+	}
+
+	private getReportedPlayerName(player: RoomBattlePlayer) {
+		return player.getUser()?.getIdentity() || player.name;
+	}
+
+	private trySetChoice(player: RoomBattlePlayer, data: string) {
+		const [choice, rqid] = data.split('|', 2);
+		const request = player.request;
+		if (request.isWait !== false && request.isWait !== true) {
+			return `[Invalid choice] There's nothing to choose`;
+		}
+		const allPlayersWait = this.players.every(p => !!p.request.isWait);
+		if (allPlayersWait || (rqid && rqid !== `${request.rqid}`)) {
+			return `[Invalid choice] Sorry, too late to make a different move; the next turn has already started`;
+		}
+		request.isWait = true;
+		request.choice = choice;
+
+		void this.stream.write(`>${player.slot} ${choice}`);
+		return '';
+	}
+
+	private receiveAutomatedChoice(player: RoomBattlePlayer, data: string) {
+		if (this.frozen || this.ended) return;
+		const error = this.trySetChoice(player, data);
+		if (error) {
+			Monitor.debug(`Ignored automated battle choice for ${this.roomid} ${player.slot}: ${error}`);
+		}
+	}
+
 	checkActive() {
 		const active = (this.started && !this.ended && this.players.every(p => p.active));
 		Rooms.global.battleCount += (active ? 1 : 0) - (this.active ? 1 : 0);
@@ -620,23 +731,9 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 			return;
 		}
 		const player = this.playerTable[user.id];
-		const [choice, rqid] = data.split('|', 2);
 		if (!player) return;
-		const request = player.request;
-		if (request.isWait !== false && request.isWait !== true) {
-			player.sendRoom(`|error|[Invalid choice] There's nothing to choose`);
-			return;
-		}
-		const allPlayersWait = this.players.every(p => !!p.request.isWait);
-		if (allPlayersWait || // too late
-			(rqid && rqid !== `${request.rqid}`)) { // WAY too late
-			player.sendRoom(`|error|[Invalid choice] Sorry, too late to make a different move; the next turn has already started`);
-			return;
-		}
-		request.isWait = true;
-		request.choice = choice;
-
-		void this.stream.write(`>${player.slot} ${choice}`);
+		const error = this.trySetChoice(player, data);
+		if (error) player.sendRoom(`|error|${error}`);
 	}
 	override undo(user: User, data: string) {
 		const player = this.playerTable[user.id];
@@ -663,7 +760,9 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 			return false;
 		}
 
-		const validSlots = this.players.filter(player => !player.id).map(player => player.slot);
+		const validSlots = this.players
+			.filter(player => !player.id && !player.isAutomated)
+			.map(player => player.slot);
 
 		if (slot && !validSlots.includes(slot)) {
 			user.popup(`This battle already has a user in slot ${slot}.`);
@@ -754,6 +853,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		for (const player of this.players) {
 			player.request = { rqid: 0, request: '', isWait: 'cantUndo', choice: '' };
 		}
+		this.destroyAutomatedPlayers();
 		super.setEnded();
 		this.timer.end();
 		this.checkActive();
@@ -769,6 +869,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 			break;
 
 		case 'update':
+			this.pushUpdateToAutomatedPlayers(lines.slice(1));
 			for (const line of lines.slice(1)) {
 				if (line.startsWith('|turn|')) {
 					this.turn = parseInt(line.slice(6));
@@ -805,10 +906,12 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 				};
 				this.requestCount++;
 				player?.sendRoom(`|request|${requestJSON}`);
+				this.pushSideupdateToAutomatedPlayer(slot, `|request|${requestJSON}`);
 				if (!request.update) this.timer.nextRequest(player);
 				break;
 			}
 			player?.sendRoom(lines[2]);
+			this.pushSideupdateToAutomatedPlayer(slot, lines[2]);
 			break;
 		}
 
@@ -839,12 +942,12 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		const winnerid = toID(winnerName);
 
 		// Check if the battle was rated to update the ladder, return its response, and log the battle.
-		if (winnerid === this.p1.id) {
+		if (winnerid === this.getPlayerIdentifier(this.p1)) {
 			p1score = 1;
-		} else if (winnerid === this.p2.id) {
+		} else if (winnerid === this.getPlayerIdentifier(this.p2)) {
 			p1score = 0;
 		}
-		Chat.runHandlers('onBattleEnd', this, winnerid, this.players.map(p => p.id));
+		Chat.runHandlers('onBattleEnd', this, winnerid, this.players.map(player => this.getPlayerIdentifier(player)));
 		if (this.room.rated && !this.options.isBestOfSubBattle) {
 			void this.updateLadder(p1score, winnerid);
 		} else if (Config.logchallenges) {
@@ -1061,14 +1164,23 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		this[slot] = player;
 
 		if (playerOpts) {
+			player.isAutomated = !!playerOpts.automation;
+			player.automation = playerOpts.automation || null;
+			if (playerOpts.name) player.name = playerOpts.name;
+			player.avatar = playerOpts.avatar !== undefined ? `${playerOpts.avatar}` : (user ? `${user.avatar}` : player.avatar);
+			if (player.isAutomated) {
+				player.active = true;
+				player.knownActive = true;
+			}
 			const options = {
 				name: player.name,
-				avatar: user ? `${user.avatar}` : '',
+				avatar: player.avatar,
 				team: playerOpts.team || undefined,
 				rating: Math.round(playerOpts.rating || 0),
 			};
 			void this.stream.write(`>player ${slot} ${JSON.stringify(options)}`);
 			player.hasTeam = true;
+			this.createAutomatedPlayer(player);
 		}
 
 		if (user) {
@@ -1138,12 +1250,15 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		return null;
 	}
 
-	makePlayer(user: User) {
+	makePlayer(user: User | string | null) {
 		const num = (this.players.length + 1) as PlayerIndex;
 		return new RoomBattlePlayer(user, this, num);
 	}
 
 	override setPlayerUser(player: RoomBattlePlayer, user: User | null, playerOpts?: { team?: string }) {
+		if (player.isAutomated && user) {
+			throw new Error(`Cannot replace automated player ${player.slot} with a user.`);
+		}
 		if (user === null && this.room.auth.get(player.id) === Users.PLAYER_SYMBOL) {
 			this.room.auth.set(player.id, '+');
 		}
@@ -1154,16 +1269,27 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		if (user) {
 			player.active = user.inRooms.has(this.roomid);
 			player.knownActive = true;
+			player.avatar = `${user.avatar}`;
 			const options = {
 				name: player.name,
-				avatar: user.avatar,
+				avatar: player.avatar,
 				team: playerOpts?.team,
 			};
 			void this.stream.write(`>player ${slot} ` + JSON.stringify(options));
 			if (playerOpts) player.hasTeam = true;
 
-			this.room.add(`|player|${slot}|${player.name}|${user.avatar}|`);
+			this.room.add(`|player|${slot}|${player.name}|${player.avatar}|`);
 			Chat.runHandlers('onBattleJoin', slot as string, user, this);
+		} else if (player.isAutomated) {
+			player.active = true;
+			player.knownActive = true;
+			const options = {
+				name: player.name,
+				avatar: player.avatar,
+				team: playerOpts?.team,
+			};
+			void this.stream.write(`>player ${slot} ` + JSON.stringify(options));
+			if (playerOpts) player.hasTeam = true;
 		} else {
 			player.active = false;
 			player.knownActive = false;
@@ -1205,13 +1331,16 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		const delayStart = this.options.delayedStart || !!this.options.inputLog;
 		const users = this.players.map(player => {
 			const user = player.getUser();
-			if (!user && !delayStart) {
+			if (!user && !delayStart && !player.isAutomated) {
 				throw new Error(`User ${player.id} not found on ${this.roomid} battle creation`);
 			}
 			return user;
-		});
+		}).filter(Boolean) as User[];
 		if (!delayStart) {
-			Rooms.global.onCreateBattleRoom(users as User[], this.room, { rated: this.rated });
+			Rooms.global.onCreateBattleRoom(users, this.room, {
+				rated: this.rated,
+				reportPlayers: this.players.map(player => this.getReportedPlayerName(player)),
+			});
 			this.started = true;
 		} else if (delayStart === 'multi') {
 			this.room.add(`|uhtml|invites|<div class="broadcast broadcast-blue"><strong>This is a 4-player challenge battle</strong><br />The players will need to add more players before the battle can start.</div>`);
@@ -1219,7 +1348,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 	}
 
 	invitesFull() {
-		return this.players.every(player => player.id || player.invite);
+		return this.players.every(player => player.id || player.invite || player.isAutomated);
 	}
 	/** true = send to every player; falsy = send to no one */
 	sendInviteForm(connection: Connection | User | null | boolean) {

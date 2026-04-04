@@ -78,6 +78,14 @@ function showHelp() {
 	console.log('');
 	console.log('  Reads a team in any format from stdin, writes the exported (human-readable) team to stdout');
 	console.log('');
+	console.log('pokemon-showdown model-league [--config PATH] <start|pause|resume|force-benchmark|force-snapshot|enqueue-training|status> [CHECKPOINT-ID]');
+	console.log('');
+	console.log('  Manages the file-backed model league daemon and control queue');
+	console.log('');
+	console.log('pokemon-showdown browser-model-bridge [--host HOST] [--port PORT] [--model-endpoint URL] [--model-id ID] [--debug-log PATH]');
+	console.log('');
+	console.log('  Normalizes browser battle requests and forwards them to a local model endpoint');
+	console.log('');
 	console.log('pokemon-showdown help');
 	console.log('');
 	console.log('  Displays this reference');
@@ -86,10 +94,7 @@ function showHelp() {
 try {
 	fetch;
 } catch (e) {
-	// fetch was introduced in Node 18, which is EOL,
-	// so we'll ask for the most recent "Active LTS" with it to be safe
-	// https://nodejs.org/en/about/previous-releases
-	console.error("We require Node.js version 22 or later; you're using " + process.version);
+	console.error("We require a Node.js version with built-in fetch (Node 18 or later); you're using " + process.version);
 	process.exit(1);
 }
 
@@ -271,6 +276,34 @@ if (!cli.positionals.length || /^[0-9]+$/.test(cli.positionals[0])) {
 					console.error(e);
 					process.exit(1);
 				}
+			});
+		}
+		break;
+	case 'model-league':
+		{
+			build();
+			require('source-map-support/register');
+			var modelLeagueIndex = process.argv.indexOf('model-league');
+			var modelLeagueArgs = modelLeagueIndex >= 0 ? process.argv.slice(modelLeagueIndex + 1) : cli.positionals.slice(1);
+			Promise.resolve(
+				require('./dist/server/model-league/cli.js').runModelLeagueCLI(modelLeagueArgs)
+			).catch(function (e) {
+				console.error(e);
+				process.exit(1);
+			});
+		}
+		break;
+	case 'browser-model-bridge':
+		{
+			build();
+			require('source-map-support/register');
+			var bridgeIndex = process.argv.indexOf('browser-model-bridge');
+			var bridgeArgs = bridgeIndex >= 0 ? process.argv.slice(bridgeIndex + 1) : cli.positionals.slice(1);
+			Promise.resolve(
+				require('./dist/server/browser-model-bridge.js').runBrowserModelBridgeCLI(bridgeArgs)
+			).catch(function (e) {
+				console.error(e);
+				process.exit(1);
 			});
 		}
 		break;

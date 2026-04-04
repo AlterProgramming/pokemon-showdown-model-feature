@@ -3,7 +3,7 @@
  * Reconstructs the public battle snapshot consumed by the Python model.
  **********************************************************************/
 
-import {toID} from '../dex';
+import {Dex, toID} from '../dex';
 import type {ChoiceRequest, SideRequestData} from '../side';
 
 export type PlayerID = 'p1' | 'p2';
@@ -128,6 +128,21 @@ export class ProtocolStateTracker {
 		const player = request.side.id;
 		this.perspectivePlayer = player;
 		this.hydrateOwnSide(request.side as SideRequestData & {id: PlayerID});
+		if (Array.isArray(request.active) && request.active.length && this.sides[player].activeUid) {
+			const mon = this.mons.get(this.sides[player].activeUid!);
+			const moveEntries = request.active[0]?.moves || [];
+			if (mon && Array.isArray(moveEntries)) {
+				for (const moveEntry of moveEntries) {
+					const moveID = this.normalizeMoveName(moveEntry?.id || moveEntry?.move);
+					if (moveID && !mon.observedMoves.includes(moveID)) {
+						mon.observedMoves.push(moveID);
+					}
+				}
+				if (request.active[0]?.canTerastallize && !mon.teraType) {
+					mon.teraType = request.active[0].canTerastallize;
+				}
+			}
+		}
 	}
 
 	getSnapshot(): BattleSnapshot {
@@ -331,14 +346,34 @@ export class ProtocolStateTracker {
 
 			mon.name = refInfo.name || mon.name;
 			mon.species = detailInfo.species || mon.species;
+			mon.publicRevealed = true;
 			if (parsed.maxHP !== undefined && mon.maxHP === undefined) {
 				mon.maxHP = parsed.maxHP;
 			}
-
-			if (mon.hp !== undefined || mon.fainted || mon.status !== undefined) {
-				// Preserve training semantics for unseen bench mons: roster species/max HP are known,
-				// but current HP/status should only be present once the mon has been observed in battle.
-				this.applyCondition(mon, parsed, {clearStatus: true});
+			this.applyCondition(mon, parsed, {clearStatus: true});
+			if (entry.item) {
+				const item = Dex.items.get(entry.item).name || entry.item;
+				mon.item = item;
+			}
+			const abilityID = entry.ability || entry.baseAbility;
+			if (abilityID) {
+				const ability = Dex.abilities.get(abilityID).name || abilityID;
+				mon.ability = ability;
+			}
+			if (entry.teraType) {
+				mon.teraType = entry.teraType;
+			}
+			if (entry.terastallized) {
+				mon.terastallized = true;
+				mon.teraType = entry.terastallized || mon.teraType;
+			}
+			if (Array.isArray(entry.moves)) {
+				for (const moveName of entry.moves) {
+					const moveID = this.normalizeMoveName(moveName);
+					if (moveID && !mon.observedMoves.includes(moveID)) {
+						mon.observedMoves.push(moveID);
+					}
+				}
 			}
 			if (entry.active) {
 				this.markActive(player, uid);

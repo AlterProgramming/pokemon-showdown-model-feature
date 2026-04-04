@@ -32,6 +32,7 @@ type BattleResult = {
 	winnerKey: CompetitorKey | "tie" | "unknown";
 	switches: Record<CompetitorKey, number>;
 	forcedDrags: number;
+	turns: number;
 	assignment: BattleAssignment;
 	replayLog: string;
 };
@@ -155,6 +156,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 
 	let winner: string | null = null;
 	let forcedDrags = 0;
+	let turnCount = 0;
 	const replayLogLines: string[] = [];
 	const seenOpeningSendout: Record<BattleSide, boolean> = {p1: false, p2: false};
 	const switches: Record<CompetitorKey, number> = {modelA: 0, modelB: 0};
@@ -191,6 +193,11 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 
 				const winMatch = line.match(/^\|win\|(.*)/);
 				if (winMatch) winner = winMatch[1].trim();
+
+				const turnMatch = line.match(/^\|turn\|(\d+)/);
+				if (turnMatch) {
+					turnCount = Math.max(turnCount, Number(turnMatch[1]));
+				}
 			}
 		}
 	})();
@@ -211,6 +218,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 			winnerKey,
 			switches,
 			forcedDrags,
+			turns: turnCount,
 			assignment,
 			replayLog: replayLogLines.join("\n"),
 		};
@@ -256,6 +264,7 @@ let failed = 0;
 let timedOut = 0;
 let ties = 0;
 let forcedDrags = 0;
+let totalTurns = 0;
 let savedReplays = 0;
 let stopRequested = false;
 let hardStopRequested = false;
@@ -303,6 +312,7 @@ function printStats() {
 	console.log(`Model A Switches: ${switches.modelA}`);
 	console.log(`Model B Switches: ${switches.modelB}`);
 	console.log(`Forced Drag Switches: ${forcedDrags}`);
+	console.log(`Total Turns: ${totalTurns}`);
 	console.log(`Elapsed Wall Time: ${formatDurationMs(elapsedMs)}`);
 
 	if (completed > 0) {
@@ -310,6 +320,7 @@ function printStats() {
 		console.log(`Model B Win Rate: ${((wins.modelB / completed) * 100).toFixed(2)}%`);
 		console.log(`Avg Model A Switches/Game: ${(switches.modelA / completed).toFixed(2)}`);
 		console.log(`Avg Model B Switches/Game: ${(switches.modelB / completed).toFixed(2)}`);
+		console.log(`Avg Turns/Battle: ${(totalTurns / completed).toFixed(2)}`);
 		console.log(`Avg Wall Time/Game: ${formatDurationMs(elapsedMs / completed)}`);
 		console.log(`Throughput: ${((completed / elapsedMs) * 60_000).toFixed(2)} games/min`);
 	}
@@ -493,6 +504,7 @@ async function runExperiment() {
 			switches.modelA += result.switches.modelA;
 			switches.modelB += result.switches.modelB;
 			forcedDrags += result.forcedDrags;
+			totalTurns += result.turns;
 			saveReplayForGrid(gameNumber, result);
 			maybeSaveReplay(gameNumber, result);
 			seatGames[result.assignment.p1.key].p1++;
