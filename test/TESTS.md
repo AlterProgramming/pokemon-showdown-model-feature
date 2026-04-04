@@ -1,5 +1,9 @@
 Pokemon Showdown uses mocha for its unit tests. To run, use `npm test` on the command line. Certain tests run more slowly (marked as `(slow)` in the test's title); you can use `npm run full-test` for those as well, but it will take longer and usually isn't necessary for most bugfixes. When submitting a pull request, GitHub Actions will automatically run full-test.
 
+For Windows-specific setup notes, narrow-file commands, and common compatibility warnings, see `TEST_RUNBOOK.md`.
+
+For the fresh-machine Intel Mac handoff flow, including the sister-repo model-server setup, see `INTEL_MAC_HANDOFF.md`.
+
 To run specific tests, you can change `it` or `describe` to `it.only` or `describe.only`. `npx mocha -g "text"` can let you run tests with "text" in its title (e.g. `npx mocha -g "Gen 1"` for all tests with the string "Gen 1").
 
 ## Creating tests

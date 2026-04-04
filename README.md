@@ -47,12 +47,16 @@ Documentation quick links
 * [CONTRIBUTING.md][6] - Useful code standards to understand if you want to send pull requests to PS (not necessary if you're just using the code and not planning to contribute back).
 * [ARCHITECTURE.md][7] - A high-level overview of how the code works.
 * [Bot FAQ][8] - An FAQ compiled by Kaiepi regarding making Pokemon Showdown bots - mainly chatbots and battle bots.
+* [INTEL_MAC_HANDOFF.md][13] - Fresh-machine handoff notes for the RL/model-serving workflow on an Intel Mac.
+* [TEST_RUNBOOK.md][12] - Windows-specific test setup, narrow-file mocha commands, and common compatibility caveats.
 
   [4]: ./PROTOCOL.md
   [5]: ./sim/SIM-PROTOCOL.md
   [6]: ./CONTRIBUTING.md
   [7]: ./ARCHITECTURE.md
   [8]: https://gist.github.com/Kaiepi/becc5d0ecd576f5e7733b57b4e3fa97e
+  [12]: ./TEST_RUNBOOK.md
+  [13]: ./INTEL_MAC_HANDOFF.md
 
 
 Community

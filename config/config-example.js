@@ -381,6 +381,55 @@ exports.laddermodchat = false;
 exports.forcetimer = false;
 
 /**
+ * modelBattles - configures the /modelbattle page and its trained opponents
+ *   Each entry becomes one selectable model opponent.
+ *   For formats without built-in random team generation, set `team` or `teams`.
+ *
+ * @type {Array<{
+ *   id?: string, name?: string, description?: string, modelID?: string,
+ *   endpoint?: string, modelProfile?: string, allowVoluntarySwitches?: boolean,
+ *   formats?: string[], team?: string, teams?: {[formatid: string]: string},
+ *   botName?: string, avatar?: string | number,
+ * }>}
+ */
+exports.modelBattles = [
+	/*
+	{
+		id: 'baseline',
+		name: 'Baseline Model',
+		description: 'Example trained model served by your inference service.',
+		endpoint: 'http://127.0.0.1:8000/predict',
+		modelID: 'baseline-v1',
+		modelProfile: 'joint-policy',
+		allowVoluntarySwitches: false,
+		formats: ['gen9randombattle', 'gen9ou'],
+		team: 'PACKED_TEAM_STRING_FOR_NON_RANDOM_FORMATS',
+		teams: {
+			gen9ou: 'PACKED_TEAM_STRING_FOR_GEN9OU',
+		},
+		botName: 'Model Bot',
+		avatar: 169,
+	},
+	*/
+];
+
+/**
+ * model league
+ *   The persistent self-play league is configured separately in
+ *   `config/model-league.json`.
+ *
+ *   Start from the tracked template:
+ *     cp config/model-league.example.json config/model-league.json
+ *
+ *   Start or inspect it with:
+ *     ./pokemon-showdown model-league start
+ *     ./pokemon-showdown model-league status
+ *
+ *   The corresponding admin page is `/j view-modelleague`, gated by
+ *   Development-room `lock` permission.
+ */
+
+/**
  * force register ELO - unregistered users cannot search for ladder battles
  * in formats where their ELO is at or above this value.
  * @type {false | number}

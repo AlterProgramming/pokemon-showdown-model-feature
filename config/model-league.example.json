@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "format": "gen9customgame@@@!Team Preview",
+  "stateRoot": "databases/model-league",
+  "logRoot": "logs/model-league",
+  "models": [
+    {
+      "id": "model1",
+      "name": "model1",
+      "modelID": "model1",
+      "endpoint": "http://127.0.0.1:5000/predict",
+      "modelProfile": "joint-policy",
+      "active": true,
+      "archived": false,
+      "lineageId": "vector_joint_bc",
+      "sampleWeight": 1
+    },
+    {
+      "id": "model2",
+      "name": "model2",
+      "modelID": "model2",
+      "endpoint": "http://127.0.0.1:5000/predict",
+      "modelProfile": "joint-policy",
+      "active": true,
+      "archived": false,
+      "lineageId": "vector_joint_bc_transition",
+      "sampleWeight": 1
+    },
+    {
+      "id": "model4",
+      "name": "model4",
+      "modelID": "model4",
+      "endpoint": "http://127.0.0.1:5000/predict",
+      "modelProfile": "joint-policy-value",
+      "active": true,
+      "archived": false,
+      "lineageId": "vector_joint_bc_transition_value",
+      "sampleWeight": 1
+    }
+  ],
+  "teams": [
+    {
+      "id": "starter-team-randbat-a",
+      "name": "Starter Team Randbat A",
+      "packedTeam": "Venusaur||Leftovers|Overgrow|sludgebomb,gigadrain,substitute,leechseed||85,,85,85,85,85|F|,0,,,,||84|,,,,,Steel]Eternatus||Leftovers|Pressure|recover,dynamaxcannon,flamethrower,toxicspikes||85,,85,85,85,85|N|,0,,,,||69|,,,,,Water]Vivillon|VivillonTundra|HeavyDutyBoots|CompoundEyes|hurricane,quiverdance,sleeppowder,terablast||85,,85,85,85,85|F|,0,,,,||83|,,,,,Ground]Clefable||Leftovers|Unaware|fireblast,moonblast,moonlight,calmmind||85,,85,85,85,85|F|,0,,,,||83|,,,,,Fire]Torkoal||HeavyDutyBoots|Drought|stealthrock,yawn,lavaplume,rapidspin||85,85,85,85,85,85|M|||88|,,,,,Dragon]Meowstic||LightClay|Prankster|yawn,reflect,lightscreen,psychicnoise||85,,85,85,85,85|M|,0,,,,||89|,,,,,Fairy",
+      "active": true,
+      "archived": false,
+      "sampleWeight": 1
+    },
+    {
+      "id": "starter-team-factory-a",
+      "name": "Starter Team Factory A",
+      "packedTeam": "Rotom|RotomWash|Leftovers|Levitate|HydroPump,VoltSwitch,WillOWisp,PainSplit|Calm|252,,,,168,88|N|,0,,,,|||,,,,,Steel]Lokix||BlackGlasses|TintedLens|Protect,KnockOff,SwordsDance,SuckerPunch|Adamant|,252,,,4,252|||||,,,,,Dark]Clodsire||HeavyDutyBoots|WaterAbsorb|Earthquake,Recover,Toxic,StealthRock|Careful|248,,176,,84,|||||,,,,,Dark]Slowking||HeavyDutyBoots|Regenerator|Scald,ChillyReception,ThunderWave,SlackOff|Sassy|252,,172,,84,||,0,,,,0|||,,,,,Water]Skarmory||RockyHelmet|Sturdy|BodyPress,Roost,Spikes,Whirlwind|Bold|252,,208,,,48||,0,,,,|||,,,,,Water]Latios||ChoiceScarf|Levitate|DracoMeteor,LusterPurge,FlipTurn,Trick|Timid|,,4,252,,252|M||||,,,,,Dragon",
+      "active": true,
+      "archived": false,
+      "sampleWeight": 1
+    },
+    {
+      "id": "starter-team-bss-a",
+      "name": "Starter Team BSS A",
+      "packedTeam": "Roaring Moon||ChoiceBand|Protosynthesis|KnockOff,Uturn,IronHead,Outrage|Jolly|,252,,,4,252|N|||50|,,,,,Steel]Toxapex||Leftovers|Regenerator|Toxic,Liquidation,Recover,Haze|Impish|252,,252,,4,|F|||50|,,,,,Poison]Sinistcha||CovertCloak|Heatproof|StrengthSap,MatchaGotcha,Hex,Scald|Bold|252,,252,,4,|N|,0,,,,||50|,,,,,Normal]Milotic||FlameOrb|MarvelScale|Scald,Recover,MirrorCoat,FlipTurn|Bold|252,,252,,4,|F|||50|,,,,,Fairy]Orthworm||RockyHelmet|EarthEater|IronDefense,BodyPress,IronHead,ShedTail|Impish|252,,252,,4,|M|||50|,,,,,Ghost]Kleavor||ChoiceScarf|Sharpness|StoneAxe,Uturn,NightSlash,XScissor|Jolly|,252,,,4,252|M|||50|,,,,,Grass",
+      "active": true,
+      "archived": false,
+      "sampleWeight": 1
+    }
+  ],
+  "benchmarks": [
+    {
+      "id": "tower-1",
+      "name": "Tower 1",
+      "level": 1,
+      "opponentModelId": "model1",
+      "opponentTeamId": "starter-team-randbat-a",
+      "requiredWinRate": 0.6,
+      "rollouts": 8,
+      "description": "Frozen baseline benchmark."
+    }
+  ],
+  "scheduler": {
+    "loopIntervalMs": 5000,
+    "benchmarkIntervalMs": 3600000,
+    "maxConcurrentTasks": 1,
+    "liveMatchmakingWeight": 60,
+    "archivedMatchmakingWeight": 20,
+    "explorationWeight": 20,
+    "liveRollouts": 6,
+    "historicalRollouts": 4,
+    "benchmarkRolloutsDefault": 8,
+    "sideSwap": true,
+    "matchmakingWindow": 125,
+    "recentMatchLimit": 30
+  },
+  "ratings": {
+    "initialElo": 1000,
+    "minElo": 1000
+  },
+  "replay": {
+    "captureMode": "none",
+    "captureCount": 0,
+    "outputDir": "logs/model-league/replays",
+    "grid": false,
+    "gridRefreshSeconds": 2
+  },
+  "training": {
+    "enabled": true,
+    "minMatches": 10,
+    "minExamples": 100,
+    "cooldownMs": 21600000,
+    "examplesDir": "training/examples",
+    "bundleDir": "training/bundles",
+    "pendingJobDir": "training/pending",
+    "completedJobDir": "training/completed"
+  },
+  "webhooks": {
+    "outboundTrainingRequested": null,
+    "inboundTrainingCompleted": null
+  }
+}
