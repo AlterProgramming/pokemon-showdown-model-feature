@@ -1,7 +1,8 @@
+import * as fs from "fs";
 import * as path from "path";
 import {BattleStream, getPlayerStreams, Teams} from "..";
 import {RandomPlayerAI} from "../tools/random-player-ai";
-import {getRLAgentMetrics, resetRLAgentMetrics, RLAgentAI} from "../tools/rl-agent";
+import {getRLAgentMetrics, resetRLAgentMetrics, RLAgentAI, type RLAgentDecisionRecord} from "../tools/rl-agent";
 import {parseBooleanOption, resolveRLModelProfileConfig} from "../tools/rl-model-profiles";
 import {
 	parseReplayCaptureMode,
@@ -19,6 +20,7 @@ type BattleResult = {
 	rlSwitches: number;
 	forcedDrags: number;
 	replayLog: string;
+	decisionRecords: RLAgentDecisionRecord[];
 };
 
 type PreparedTeams = {
@@ -131,6 +133,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 		team: teams.p2Team,
 	};
 
+	const decisionRecords: RLAgentDecisionRecord[] = [];
 	const p1 = new RandomPlayerAI(streams.p1);
 	const p2 = new RLAgentAI(streams.p2, {
 		endpoint: RL_MODEL_ENDPOINT,
@@ -138,6 +141,9 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 		modelID: RL_MODEL_ID,
 		modelProfile: RL_PROFILE.profile,
 		allowVoluntarySwitches: RL_PROFILE.allowVoluntarySwitches,
+		onDecision: record => {
+			if (record.modelRequest && record.modelResponse) decisionRecords.push(record);
+		},
 	});
 
 	void p1.start();
@@ -215,6 +221,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 			rlSwitches,
 			forcedDrags,
 			replayLog: shouldCaptureReplayLog ? replayLogLines.join("\n") : "",
+			decisionRecords,
 		};
 	})();
 
@@ -454,6 +461,13 @@ function saveReplayForGrid(gameNumber: number, result: BattleResult) {
 	addReplayToDashboard(gameNumber, outcome, replayPath);
 }
 
+function saveDecisionTrace(outputDir: string, fileStem: string, records: RLAgentDecisionRecord[]) {
+	const filePath = path.join(path.resolve(outputDir), `${fileStem}.requests.json`);
+	fs.mkdirSync(path.dirname(filePath), {recursive: true});
+	fs.writeFileSync(filePath, JSON.stringify(records, null, 2) + "\n", "utf-8");
+	return filePath;
+}
+
 function maybeSaveReplay(gameNumber: number, result: BattleResult) {
 	if (!REPLAY_CAPTURE_COUNT || savedReplays >= REPLAY_CAPTURE_COUNT) return;
 	const outcome = replayOutcomeForResult(result);
@@ -470,8 +484,10 @@ function maybeSaveReplay(gameNumber: number, result: BattleResult) {
 		battleLog: result.replayLog,
 		title: `Random vs RL (${RL_PROFILE.profile}) - Game ${gameNumber}`,
 	});
+	const tracePath = saveDecisionTrace(REPLAY_OUTPUT_DIR, fileStem, result.decisionRecords);
 	savedReplays++;
 	progressLog(`[replay] Saved ${outcome} replay: ${replayPath}`);
+	progressLog(`[replay] Saved decision trace: ${tracePath}`);
 }
 
 process.on("SIGINT", () => {
