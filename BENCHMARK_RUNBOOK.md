@@ -125,6 +125,16 @@ Latest validated result on this path:
 
 - about `1023 games/min` on `1000` games with `CONCURRENCY=10` and `BENCHMARK_WARMUP_GAMES=100`
 
+Validated machine/runtime for that result:
+
+- host: Intel MacBook Pro class machine
+- CPU: `Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz`
+- logical CPUs: `16`
+- RAM: `64 GiB`
+- OS: `macOS 26.4` (`Darwin 25.4.0`, `x86_64`)
+- Node: `v22.12.0`
+- npm: `10.9.0`
+
 Notes:
 
 - No HTTP or IPC model server is needed for this path.

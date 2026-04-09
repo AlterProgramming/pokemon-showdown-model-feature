@@ -103,6 +103,15 @@ Notes for this local path:
 - `BENCHMARK_PREGENERATE_TEAMS=true` removes random team generation from the timed section
 - `BENCHMARK_WARMUP_GAMES=100` warms the local policy and simulator loop before timing starts
 
+Validated machine/runtime for that result:
+
+- CPU: `Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz`
+- logical CPUs: `16`
+- RAM: `64 GiB`
+- OS: `macOS 26.4` (`Darwin 25.4.0`, `x86_64`)
+- Node: `v22.12.0`
+- npm: `10.9.0`
+
 Model-vs-model:
 
 ```bash
