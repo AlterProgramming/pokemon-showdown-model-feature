@@ -10,13 +10,11 @@ import type { ObjectReadWriteStream } from '../../lib/streams';
 import { BattlePlayer } from '../battle-stream';
 import { PRNG, type PRNGSeed } from '../prng';
 import type { ChoiceRequest } from '../side';
-import { ProtocolStateTracker } from './protocol-state-tracker';
 
 export class RandomPlayerAI extends BattlePlayer {
 	protected readonly move: number;
 	protected readonly mega: number;
 	protected readonly prng: PRNG;
-	private tracker = new ProtocolStateTracker();
 	
 	constructor(
 		playerStream: ObjectReadWriteStream<string>,
@@ -37,9 +35,14 @@ export class RandomPlayerAI extends BattlePlayer {
 		throw error;
 	}
 
-	override receive(chunk: string): void {
-		this.tracker.applyChunk(chunk);
-		super.receive(chunk);
+	override receiveLine(line: string) {
+		if (this.debug) console.log(line);
+		if (!line.startsWith('|')) return;
+		const separator = line.indexOf('|', 1);
+		const cmd = separator >= 0 ? line.slice(1, separator) : line.slice(1);
+		const rest = separator >= 0 ? line.slice(separator + 1) : '';
+		if (cmd === 'request') return this.receiveRequest(JSON.parse(rest));
+		if (cmd === 'error') return this.receiveError(new Error(rest));
 	}
 	override receiveRequest(request: ChoiceRequest) {
 		if (request.wait) {
@@ -167,10 +170,6 @@ export class RandomPlayerAI extends BattlePlayer {
 					return `switch ${target}`;
 				} else if (moves.length) {
 					const move = this.chooseMove(active, moves);
-					// console.log(moves)
-					// const snapshot = this.tracker.getSnapshot();
-					// const stateVector = this.tracker.encodeState(snapshot);
-            		// console.log(stateVector.length)
 					if (move.endsWith(` zmove`)) {
 						canZMove = false;
 						return move;

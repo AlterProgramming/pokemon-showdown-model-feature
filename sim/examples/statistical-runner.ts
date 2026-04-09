@@ -21,16 +21,39 @@ type BattleResult = {
 	replayLog: string;
 };
 
+type PreparedTeams = {
+	p1Team: string;
+	p2Team: string;
+};
+
 type BattleSide = "p1" | "p2";
 
+function readArgValue(flag: string): string | undefined {
+	const index = process.argv.indexOf(flag);
+	if (index < 0) return undefined;
+	return process.argv[index + 1];
+}
+
+function readNumberOption(flag: string, envValue: string | undefined, fallback: number): number {
+	const argValue = readArgValue(flag);
+	const rawValue = argValue ?? envValue;
+	if (rawValue === undefined) return fallback;
+	const parsed = Number(rawValue);
+	return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readStringOption(flag: string, envValue: string | undefined, fallback: string): string {
+	return readArgValue(flag) ?? envValue ?? fallback;
+}
+
 const RL_PROFILE = resolveRLModelProfileConfig(
-	process.env.RL_MODEL_PROFILE,
+	readStringOption("--rl-model-profile", process.env.RL_MODEL_PROFILE, ""),
 	parseBooleanOption(process.env.RL_ALLOW_VOLUNTARY_SWITCHES),
 );
 
-const TOTAL_GAMES = Number(process.env.TOTAL_GAMES || 20);
-const CONCURRENCY = Number(process.env.CONCURRENCY || 5);
-const BATTLE_TIMEOUT_MS = Number(process.env.BATTLE_TIMEOUT_MS || 180_000);
+const TOTAL_GAMES = readNumberOption("--total-games", process.env.TOTAL_GAMES, 20);
+const CONCURRENCY = readNumberOption("--concurrency", process.env.CONCURRENCY, 5);
+const BATTLE_TIMEOUT_MS = readNumberOption("--battle-timeout-ms", process.env.BATTLE_TIMEOUT_MS, 180_000);
 const MAX_FAILED_GAMES = Number(process.env.MAX_FAILED_GAMES || 10);
 const REPLAY_CAPTURE_MODE = parseReplayCaptureMode(process.env.REPLAY_CAPTURE_MODE);
 const REPLAY_CAPTURE_COUNT = Number(process.env.REPLAY_CAPTURE_COUNT || 0);
@@ -38,12 +61,17 @@ const REPLAY_OUTPUT_DIR = process.env.REPLAY_OUTPUT_DIR || "logs/replays";
 const REPLAY_GRID = parseBooleanOption(process.env.REPLAY_GRID) ?? false;
 const REPLAY_GRID_REFRESH_SECONDS = Number(process.env.REPLAY_GRID_REFRESH_SECONDS || 2);
 const REPLAY_GRID_FILE_NAME = process.env.REPLAY_GRID_FILE_NAME || "random-vs-model-grid.html";
-const RL_MODEL_ENDPOINT = process.env.RL_MODEL_ENDPOINT || "http://127.0.0.1:5000/predict";
-const RL_MODEL_TRANSPORT = process.env.RL_MODEL_TRANSPORT || "http";
+const RL_MODEL_ENDPOINT = readStringOption("--rl-model-endpoint", process.env.RL_MODEL_ENDPOINT, "http://127.0.0.1:5000/predict");
+const RL_MODEL_TRANSPORT = readStringOption("--rl-model-transport", process.env.RL_MODEL_TRANSPORT, "http");
+const RL_MODEL_ID = readArgValue("--rl-model-id") ?? process.env.RL_MODEL_ID;
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000);
 const BENCHMARK_QUIET = parseBooleanOption(process.env.BENCHMARK_QUIET) ?? false;
+const BENCHMARK_FAST_MODE = parseBooleanOption(process.env.BENCHMARK_FAST_MODE) ?? false;
+const TRACK_SWITCH_STATS = !BENCHMARK_FAST_MODE && (parseBooleanOption(process.env.BENCHMARK_TRACK_SWITCH_STATS) ?? true);
+const PREGENERATE_TEAMS = parseBooleanOption(process.env.BENCHMARK_PREGENERATE_TEAMS) ?? true;
 const activeBattleAborters = new Map<number, (reason?: string) => void>();
 const replayDashboardTiles: ReplayDashboardTile[] = [];
+const preparedTeams = new Map<number, PreparedTeams>();
 
 function progressLog(message: string) {
 	if (!BENCHMARK_QUIET) console.log(message);
@@ -77,25 +105,36 @@ function isInterruptAbortError(error: unknown): boolean {
 	return error instanceof Error && error.name === "InterruptAbortError";
 }
 
+function buildPreparedTeams(): PreparedTeams {
+	return {
+		p1Team: Teams.pack(Teams.generate("gen9randombattle")),
+		p2Team: Teams.pack(Teams.generate("gen9randombattle")),
+	};
+}
+
 async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 	const battleStream = new BattleStream();
 	const streams = getPlayerStreams(battleStream);
+	const shouldCaptureReplayLog = REPLAY_GRID || REPLAY_CAPTURE_COUNT > 0;
+	const teams = preparedTeams.get(gameNumber) || buildPreparedTeams();
 
 	const spec = {formatid: "gen9randombattle"};
 
 	const p1spec = {
 		name: "RandomBot",
-		team: Teams.pack(Teams.generate("gen9randombattle")),
+		team: teams.p1Team,
 	};
 
 	const p2spec = {
 		name: "RLBot",
-		team: Teams.pack(Teams.generate("gen9randombattle")),
+		team: teams.p2Team,
 	};
 
 	const p1 = new RandomPlayerAI(streams.p1);
 	const p2 = new RLAgentAI(streams.p2, {
 		endpoint: RL_MODEL_ENDPOINT,
+		transport: RL_MODEL_TRANSPORT === "ipc" || RL_MODEL_TRANSPORT === "local" ? RL_MODEL_TRANSPORT : "http",
+		modelID: RL_MODEL_ID,
 		modelProfile: RL_PROFILE.profile,
 		allowVoluntarySwitches: RL_PROFILE.allowVoluntarySwitches,
 	});
@@ -107,7 +146,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 	let randomSwitches = 0;
 	let rlSwitches = 0;
 	let forcedDrags = 0;
-	const replayLogLines: string[] = [];
+	const replayLogLines: string[] = shouldCaptureReplayLog ? [] : [];
 	const seenOpeningSendout: Record<BattleSide, boolean> = {
 		p1: false,
 		p2: false,
@@ -115,34 +154,49 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 
 	const battleLoop = (async () => {
 		for await (const chunk of streams.omniscient) {
+			if (!shouldCaptureReplayLog && !TRACK_SWITCH_STATS) {
+				const winIndex = chunk.indexOf("|win|");
+				if (winIndex >= 0) {
+					const nameStart = winIndex + 5;
+					const nameEnd = chunk.indexOf("\n", nameStart);
+					winner = chunk.slice(nameStart, nameEnd >= 0 ? nameEnd : undefined).trim();
+				}
+				continue;
+			}
 			for (const rawLine of chunk.split("\n")) {
-				if (rawLine) replayLogLines.push(rawLine);
-				const line = rawLine.trim();
+				if (shouldCaptureReplayLog && rawLine) replayLogLines.push(rawLine);
+				const line = rawLine;
 				if (!line) continue;
 
-				const switchMatch = line.match(/^\|switch\|(p[12])a:/);
-				if (switchMatch) {
-					const side = switchMatch[1] as BattleSide;
+				if (TRACK_SWITCH_STATS && line.startsWith("|switch|p1a:")) {
+					const side = "p1" as BattleSide;
 					if (!seenOpeningSendout[side]) {
 						seenOpeningSendout[side] = true;
 						continue;
 					}
-					if (side === "p1") randomSwitches++;
-					else rlSwitches++;
+					randomSwitches++;
 					continue;
 				}
-
-				const dragMatch = line.match(/^\|drag\|(p[12])a:/);
-				if (dragMatch) {
-					const side = dragMatch[1] as BattleSide;
+				if (TRACK_SWITCH_STATS && line.startsWith("|switch|p2a:")) {
+					const side = "p2" as BattleSide;
+					if (!seenOpeningSendout[side]) {
+						seenOpeningSendout[side] = true;
+						continue;
+					}
+					rlSwitches++;
+					continue;
+				}
+				if (TRACK_SWITCH_STATS && line.startsWith("|drag|p1a:")) {
 					forcedDrags++;
-					if (side === "p1") randomSwitches++;
-					else rlSwitches++;
+					randomSwitches++;
 					continue;
 				}
-
-				const winMatch = line.match(/^\|win\|(.*)/);
-				if (winMatch) winner = winMatch[1].trim();
+				if (TRACK_SWITCH_STATS && line.startsWith("|drag|p2a:")) {
+					forcedDrags++;
+					rlSwitches++;
+					continue;
+				}
+				if (line.startsWith("|win|")) winner = line.slice(5).trim();
 			}
 		}
 	})();
@@ -159,7 +213,7 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 			randomSwitches,
 			rlSwitches,
 			forcedDrags,
-			replayLog: replayLogLines.join("\n"),
+			replayLog: shouldCaptureReplayLog ? replayLogLines.join("\n") : "",
 		};
 	})();
 
@@ -211,7 +265,7 @@ let stopRequested = false;
 let hardStopRequested = false;
 let interruptCount = 0;
 let fatalError: Error | null = null;
-const experimentStartedAt = Date.now();
+let experimentStartedAt = 0;
 
 function formatDurationMs(durationMs: number): string {
 	if (durationMs >= 60_000) return `${(durationMs / 60_000).toFixed(2)} min`;
@@ -231,29 +285,36 @@ function printStats() {
 	console.log(`Replay Capture Mode: ${REPLAY_CAPTURE_MODE}`);
 	console.log(`Replay Capture Limit: ${REPLAY_CAPTURE_COUNT}`);
 	console.log(`Saved Replays: ${savedReplays}`);
+	console.log(`Benchmark Fast Mode: ${BENCHMARK_FAST_MODE ? "yes" : "no"}`);
+	console.log(`Pregenerated Teams: ${PREGENERATE_TEAMS ? "yes" : "no"}`);
 	console.log(`RL Model Profile: ${RL_PROFILE.profile}`);
 	console.log(`Profile Description: ${RL_PROFILE.description}`);
 	console.log(`Voluntary Switches Enabled: ${RL_PROFILE.allowVoluntarySwitches ? "yes" : "no"}`);
 	console.log(`RL Model Transport: ${RL_MODEL_TRANSPORT}`);
 	console.log(`RL Model Endpoint: ${RL_MODEL_ENDPOINT}`);
+	console.log(`RL Model ID: ${RL_MODEL_ID || "(default)"}`);
 	console.log(`Completed Games: ${completed}`);
 	console.log(`RL Wins: ${rlWins}`);
 	console.log(`Random Wins: ${randomWins}`);
 	console.log(`Ties: ${ties}`);
 	console.log(`Failed Games: ${failed}`);
 	console.log(`Timed Out Games: ${timedOut}`);
-	console.log(`RL Switches: ${rlSwitches}`);
-	console.log(`Random Switches: ${randomSwitches}`);
-	console.log(`Total Switches: ${rlSwitches + randomSwitches}`);
-	console.log(`Forced Drag Switches: ${forcedDrags}`);
+	if (TRACK_SWITCH_STATS) {
+		console.log(`RL Switches: ${rlSwitches}`);
+		console.log(`Random Switches: ${randomSwitches}`);
+		console.log(`Total Switches: ${rlSwitches + randomSwitches}`);
+		console.log(`Forced Drag Switches: ${forcedDrags}`);
+	}
 	console.log(`Elapsed Wall Time: ${formatDurationMs(elapsedMs)}`);
 
 	if (completed > 0) {
 		const winRate = (rlWins / completed) * 100;
 		console.log(`RL Win Rate: ${winRate.toFixed(2)}%`);
-		console.log(`Avg RL Switches/Game: ${(rlSwitches / completed).toFixed(2)}`);
-		console.log(`Avg Random Switches/Game: ${(randomSwitches / completed).toFixed(2)}`);
-		console.log(`Avg Total Switches/Game: ${((rlSwitches + randomSwitches) / completed).toFixed(2)}`);
+		if (TRACK_SWITCH_STATS) {
+			console.log(`Avg RL Switches/Game: ${(rlSwitches / completed).toFixed(2)}`);
+			console.log(`Avg Random Switches/Game: ${(randomSwitches / completed).toFixed(2)}`);
+			console.log(`Avg Total Switches/Game: ${((rlSwitches + randomSwitches) / completed).toFixed(2)}`);
+		}
 		console.log(`Avg Wall Time/Game: ${formatDurationMs(elapsedMs / completed)}`);
 		console.log(`Throughput: ${((completed / elapsedMs) * 60_000).toFixed(2)} games/min`);
 	}
@@ -303,7 +364,7 @@ function printStats() {
 			console.log(`Suppressed Voluntary Switch Opportunities: ${agentMetrics.actions.voluntarySwitchOptionsSuppressed}`);
 		}
 	}
-	console.log("Switch totals exclude the initial opening send-outs.");
+	if (TRACK_SWITCH_STATS) console.log("Switch totals exclude the initial opening send-outs.");
 	console.log("===========================\n");
 }
 
@@ -425,6 +486,12 @@ process.on("SIGINT", () => {
 
 async function runExperiment() {
 	resetRLAgentMetrics();
+	if (PREGENERATE_TEAMS) {
+		for (let gameNumber = 1; gameNumber <= TOTAL_GAMES; gameNumber++) {
+			preparedTeams.set(gameNumber, buildPreparedTeams());
+		}
+	}
+	experimentStartedAt = Date.now();
 	if (REPLAY_GRID) {
 		updateReplayDashboard();
 		progressLog(`[replay-grid] Dashboard: ${path.resolve(REPLAY_OUTPUT_DIR, REPLAY_GRID_FILE_NAME)}`);
@@ -476,7 +543,6 @@ async function runExperiment() {
 			runningGames = Math.max(0, runningGames - 1);
 		}
 	}
-
 	const running: Promise<void>[] = [];
 
 	try {

@@ -125,6 +125,11 @@ export class ProtocolStateTracker {
 		}
 	}
 
+	applyProtocolLine(line: string) {
+		if (!line.startsWith('|')) return;
+		this.applyLine(line);
+	}
+
 	applyRequest(request: ChoiceRequest) {
 		if (!this.isPlayerID(request.side.id)) return;
 		const player = request.side.id;

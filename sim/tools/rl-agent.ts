@@ -85,6 +85,8 @@ type RLAgentMetrics = {
 	actions: RLAgentActionMetrics;
 };
 
+const RL_AGENT_METRICS_ENABLED = parseBooleanOption(process.env.RL_AGENT_METRICS_ENABLED) ?? true;
+
 const rlAgentMetrics: RLAgentMetrics = {
 	decisions: createTimingMetric(),
 	stateVectorBuilds: createTimingMetric(),
@@ -135,7 +137,13 @@ function resetActionMetrics(metric: RLAgentActionMetrics) {
 	}
 }
 
+function incrementActionMetric(key: keyof RLAgentActionMetrics) {
+	if (!RL_AGENT_METRICS_ENABLED) return;
+	rlAgentMetrics.actions[key]++;
+}
+
 function recordTiming(metric: TimingMetric, durationMs: number) {
+	if (!RL_AGENT_METRICS_ENABLED) return;
 	metric.count++;
 	metric.totalMs += durationMs;
 	metric.maxMs = Math.max(metric.maxMs, durationMs);
@@ -143,6 +151,15 @@ function recordTiming(metric: TimingMetric, durationMs: number) {
 }
 
 function summarizeTimingMetric(metric: TimingMetric): TimingMetricSummary {
+	if (!RL_AGENT_METRICS_ENABLED) {
+		return {
+			count: 0,
+			totalMs: 0,
+			avgMs: 0,
+			p95Ms: 0,
+			maxMs: 0,
+		};
+	}
 	const sorted = [...metric.samplesMs].sort((a, b) => a - b);
 	const p95Index = sorted.length ? Math.ceil(sorted.length * 0.95) - 1 : 0;
 	return {
@@ -155,6 +172,7 @@ function summarizeTimingMetric(metric: TimingMetric): TimingMetricSummary {
 }
 
 export function resetRLAgentMetrics() {
+	if (!RL_AGENT_METRICS_ENABLED) return;
 	resetTimingMetric(rlAgentMetrics.decisions);
 	resetTimingMetric(rlAgentMetrics.stateVectorBuilds);
 	resetTimingMetric(rlAgentMetrics.modelRequests);
@@ -170,7 +188,7 @@ export function getRLAgentMetrics() {
 		modelRequests: summarizeTimingMetric(rlAgentMetrics.modelRequests),
 		modelRequestSuccesses: rlAgentMetrics.modelRequestSuccesses,
 		modelRequestFailures: rlAgentMetrics.modelRequestFailures,
-		actions: {...rlAgentMetrics.actions},
+		actions: RL_AGENT_METRICS_ENABLED ? {...rlAgentMetrics.actions} : createActionMetrics(),
 	};
 }
 
@@ -226,8 +244,19 @@ export class RLAgentAI extends BattlePlayer {
 		});
 	}
 	override receive(chunk: string): void {
-		this.tracker.applyChunk(chunk);
-		super.receive(chunk);
+		for (const line of chunk.split('\n')) {
+			if (!line.startsWith('|')) continue;
+			this.tracker.applyProtocolLine(line);
+			if (this.debug) console.log(line);
+			const separator = line.indexOf('|', 1);
+			const cmd = separator >= 0 ? line.slice(1, separator) : line.slice(1);
+			const rest = separator >= 0 ? line.slice(separator + 1) : '';
+			if (cmd === 'request') {
+				void this.receiveRequest(JSON.parse(rest));
+			} else if (cmd === 'error') {
+				this.receiveError(new Error(rest));
+			}
+		}
 	}
 
 	override receiveError(error: Error) {
@@ -248,31 +277,29 @@ export class RLAgentAI extends BattlePlayer {
 		const perspective: RLRequestSide = request.side.id === 'p1' ? 'p1' : 'p2';
 		const requestSide: RLRequestSide = perspective;
 		if (request.wait) return;
-		const decisionStart = Date.now();
+		const decisionStart = RL_AGENT_METRICS_ENABLED ? Date.now() : 0;
 
 		try {
 			// === FORCE SWITCH ===
 			if (request.forceSwitch) {
-				rlAgentMetrics.actions.forceSwitchRequests++;
+				incrementActionMetric("forceSwitchRequests");
 				const pokemon = request.side.pokemon;
 				const hasReviveRequest = hasReviveSelectionRequest(pokemon);
-				if (hasReviveRequest) rlAgentMetrics.actions.forceSwitchRequestsWithReviveSelection++;
+				if (hasReviveRequest) incrementActionMetric("forceSwitchRequestsWithReviveSelection");
 				const legalSwitches = hasReviveRequest ? [] : buildLegalSwitchTargets(requestSide, pokemon, this.getStableSlot);
 				const legalRevives = hasReviveRequest ? buildLegalReviveTargets(requestSide, pokemon, this.getStableSlot) : [];
 				const fallbackTargets = legalRevives.length ? legalRevives : legalSwitches;
-				const recordedAt = new Date().toISOString();
-
 				if (!fallbackTargets.length) {
-					rlAgentMetrics.actions.passChoices++;
-					this.captureDecision({
-						recordedAt,
+					incrementActionMetric("passChoices");
+					this.captureDecision(() => ({
+						recordedAt: new Date().toISOString(),
 						perspectivePlayer: perspective,
 						requestKind: "forceSwitch",
 						modelRequest: null,
 						modelResponse: null,
 						chosenAction: "pass",
 						usedFallback: true,
-					});
+					}));
 					this.choose("pass");
 					return;
 				}
@@ -295,51 +322,51 @@ export class RLAgentAI extends BattlePlayer {
 				const action = await this.queryModel(modelData);
 				const switchSlot = extractSwitchSlot(action);
 				if ((action.type === "switch" || action.type === "revive") && switchSlot) {
-					if (action.type === "revive") rlAgentMetrics.actions.modelReviveChoices++;
-					else rlAgentMetrics.actions.modelForceSwitchChoices++;
-					this.captureDecision({
-						recordedAt,
+					if (action.type === "revive") incrementActionMetric("modelReviveChoices");
+					else incrementActionMetric("modelForceSwitchChoices");
+					this.captureDecision(() => ({
+						recordedAt: new Date().toISOString(),
 						perspectivePlayer: perspective,
 						requestKind: "forceSwitch",
 						modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
 						modelResponse: this.cloneForCapture(action),
 						chosenAction: `switch ${switchSlot}`,
 						usedFallback: false,
-					});
+					}));
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
 					const fallbackSlot = requestSlotForChoice(fallbackTargets[0]);
 					if (fallbackSlot) {
-						rlAgentMetrics.actions.fallbackForceSwitchChoices++;
-						this.captureDecision({
-							recordedAt,
+						incrementActionMetric("fallbackForceSwitchChoices");
+						this.captureDecision(() => ({
+							recordedAt: new Date().toISOString(),
 							perspectivePlayer: perspective,
 							requestKind: "forceSwitch",
 							modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
 							modelResponse: this.cloneForCapture(action),
 							chosenAction: `switch ${fallbackSlot}`,
 							usedFallback: true,
-						});
+						}));
 						this.chooseSwitchLikeAction(fallbackSlot);
 					} else {
-						rlAgentMetrics.actions.passChoices++;
-						this.captureDecision({
-							recordedAt,
+						incrementActionMetric("passChoices");
+						this.captureDecision(() => ({
+							recordedAt: new Date().toISOString(),
 							perspectivePlayer: perspective,
 							requestKind: "forceSwitch",
 							modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
 							modelResponse: this.cloneForCapture(action),
 							chosenAction: "pass",
 							usedFallback: true,
-						});
+						}));
 						this.choose("pass");
 					}
 				}
 
 				return;
 			} else if (request.teamPreview) {
-				rlAgentMetrics.actions.teamPreviewRequests++;
-				this.captureDecision({
+				incrementActionMetric("teamPreviewRequests");
+				this.captureDecision(() => ({
 					recordedAt: new Date().toISOString(),
 					perspectivePlayer: perspective,
 					requestKind: "teamPreview",
@@ -347,18 +374,18 @@ export class RLAgentAI extends BattlePlayer {
 					modelResponse: null,
 					chosenAction: "default",
 					usedFallback: false,
-				});
+				}));
 				this.choose(this.chooseTeamPreview(request.side.pokemon));
 			}
 
 			// === MOVE REQUEST (1v1 ONLY) ===
 			else if (request.active) {
-				rlAgentMetrics.actions.moveTurnRequests++;
+				incrementActionMetric("moveTurnRequests");
 				const active = request.active[0];
 				const pokemon = getPrimaryActivePokemon(request.side.pokemon);
 
 				if (!pokemon || pokemon.condition.endsWith(" fnt")) {
-					rlAgentMetrics.actions.passChoices++;
+					incrementActionMetric("passChoices");
 					this.choose("pass");
 					return;
 				}
@@ -366,10 +393,10 @@ export class RLAgentAI extends BattlePlayer {
 				const possibleMoves = buildLegalMoveOptions(active);
 
 				const availableSwitches = buildLegalSwitchTargets(requestSide, request.side.pokemon, this.getStableSlot);
-				if (availableSwitches.length) rlAgentMetrics.actions.moveTurnRequestsWithSwitchOptions++;
+				if (availableSwitches.length) incrementActionMetric("moveTurnRequestsWithSwitchOptions");
 				const canSwitch = this.allowVoluntarySwitches ? availableSwitches : [];
 				if (!this.allowVoluntarySwitches && availableSwitches.length) {
-					rlAgentMetrics.actions.voluntarySwitchOptionsSuppressed++;
+					incrementActionMetric("voluntarySwitchOptionsSuppressed");
 				}
 				const {snapshot, stateVector} = this.buildModelState(perspective);
 				const modelData = {
@@ -390,8 +417,8 @@ export class RLAgentAI extends BattlePlayer {
 				const moveChoiceSlot = typeof moveSlot === "number" || typeof moveSlot === "string" ? moveSlot : null;
 				const switchSlot = extractSwitchSlot(modelResponse);
 				if (modelResponse.type === "move" && moveChoiceSlot !== null) {
-					rlAgentMetrics.actions.modelMoveChoices++;
-					this.captureDecision({
+					incrementActionMetric("modelMoveChoices");
+					this.captureDecision(() => ({
 						recordedAt: new Date().toISOString(),
 						perspectivePlayer: perspective,
 						requestKind: "move",
@@ -399,12 +426,12 @@ export class RLAgentAI extends BattlePlayer {
 						modelResponse: this.cloneForCapture(modelResponse),
 						chosenAction: `move ${String(moveChoiceSlot)}`,
 						usedFallback: false,
-					});
+					}));
 					this.choose(`move ${String(moveChoiceSlot)}`);
 				} else if ((modelResponse.type === "switch" || modelResponse.type === "revive") && switchSlot) {
-					if (modelResponse.type === "revive") rlAgentMetrics.actions.modelReviveChoices++;
-					else rlAgentMetrics.actions.modelVoluntarySwitchChoices++;
-					this.captureDecision({
+					if (modelResponse.type === "revive") incrementActionMetric("modelReviveChoices");
+					else incrementActionMetric("modelVoluntarySwitchChoices");
+					this.captureDecision(() => ({
 						recordedAt: new Date().toISOString(),
 						perspectivePlayer: perspective,
 						requestKind: "move",
@@ -412,13 +439,13 @@ export class RLAgentAI extends BattlePlayer {
 						modelResponse: this.cloneForCapture(modelResponse),
 						chosenAction: `switch ${switchSlot}`,
 						usedFallback: false,
-					});
+					}));
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
 					// safe fallback
 					if (possibleMoves.length) {
-						rlAgentMetrics.actions.fallbackMoveChoices++;
-						this.captureDecision({
+						incrementActionMetric("fallbackMoveChoices");
+						this.captureDecision(() => ({
 							recordedAt: new Date().toISOString(),
 							perspectivePlayer: perspective,
 							requestKind: "move",
@@ -426,13 +453,13 @@ export class RLAgentAI extends BattlePlayer {
 							modelResponse: this.cloneForCapture(modelResponse),
 							chosenAction: `move ${possibleMoves[0].slot}`,
 							usedFallback: true,
-						});
+						}));
 						this.choose(`move ${possibleMoves[0].slot}`);
 					} else {
 						const fallbackSlot = requestSlotForChoice(availableSwitches[0]);
 						if (fallbackSlot) {
-							rlAgentMetrics.actions.fallbackMoveTurnSwitchChoices++;
-							this.captureDecision({
+							incrementActionMetric("fallbackMoveTurnSwitchChoices");
+							this.captureDecision(() => ({
 								recordedAt: new Date().toISOString(),
 								perspectivePlayer: perspective,
 								requestKind: "move",
@@ -440,11 +467,11 @@ export class RLAgentAI extends BattlePlayer {
 								modelResponse: this.cloneForCapture(modelResponse),
 								chosenAction: `switch ${fallbackSlot}`,
 								usedFallback: true,
-							});
+							}));
 							this.chooseSwitchLikeAction(fallbackSlot);
 						} else {
-							rlAgentMetrics.actions.passChoices++;
-							this.captureDecision({
+							incrementActionMetric("passChoices");
+							this.captureDecision(() => ({
 								recordedAt: new Date().toISOString(),
 								perspectivePlayer: perspective,
 								requestKind: "move",
@@ -452,14 +479,16 @@ export class RLAgentAI extends BattlePlayer {
 								modelResponse: this.cloneForCapture(modelResponse),
 								chosenAction: "pass",
 								usedFallback: true,
-							});
+							}));
 							this.choose("pass");
 						}
 					}
 				}
 			}
 		} finally {
-			recordTiming(rlAgentMetrics.decisions, Date.now() - decisionStart);
+			if (RL_AGENT_METRICS_ENABLED) {
+				recordTiming(rlAgentMetrics.decisions, Date.now() - decisionStart);
+			}
 		}
 	}
 
@@ -469,7 +498,7 @@ export class RLAgentAI extends BattlePlayer {
 	 * Sends battle state to Python model
 	 */
 	private async queryModel(modelData: any): Promise<any> {
-		const requestStart = Date.now();
+		const requestStart = RL_AGENT_METRICS_ENABLED ? Date.now() : 0;
 		let succeeded = false;
 
 		try {
@@ -477,7 +506,9 @@ export class RLAgentAI extends BattlePlayer {
 			succeeded = true;
 			return response;
 		} finally {
-			recordTiming(rlAgentMetrics.modelRequests, Date.now() - requestStart);
+			if (RL_AGENT_METRICS_ENABLED) {
+				recordTiming(rlAgentMetrics.modelRequests, Date.now() - requestStart);
+			}
 			if (succeeded) rlAgentMetrics.modelRequestSuccesses++;
 			else rlAgentMetrics.modelRequestFailures++;
 		}
@@ -504,7 +535,7 @@ export class RLAgentAI extends BattlePlayer {
 	}
 
 	private buildModelState(perspective: "p1" | "p2"): {snapshot: AnyObject, stateVector?: number[]} {
-		const buildStart = Date.now();
+		const buildStart = RL_AGENT_METRICS_ENABLED ? Date.now() : 0;
 		try {
 			const snapshot = this.tracker.getSnapshot();
 			return {
@@ -512,7 +543,9 @@ export class RLAgentAI extends BattlePlayer {
 				...(this.requiresStateVector ? {stateVector: this.tracker.encodeState(snapshot, perspective)} : {}),
 			};
 		} finally {
-			recordTiming(rlAgentMetrics.stateVectorBuilds, Date.now() - buildStart);
+			if (RL_AGENT_METRICS_ENABLED) {
+				recordTiming(rlAgentMetrics.stateVectorBuilds, Date.now() - buildStart);
+			}
 		}
 	}
 
@@ -528,9 +561,9 @@ export class RLAgentAI extends BattlePlayer {
 		return `default`;
 	}
 
-	private captureDecision(record: RLAgentDecisionRecord) {
+	private captureDecision(record: RLAgentDecisionRecord | (() => RLAgentDecisionRecord)) {
 		if (!this.onDecision) return;
-		this.onDecision?.(record);
+		this.onDecision(typeof record === "function" ? record() : record);
 	}
 
 	private cloneForCapture(value: AnyObject | null) {

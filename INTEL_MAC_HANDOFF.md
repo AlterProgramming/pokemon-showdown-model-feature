@@ -75,6 +75,32 @@ RL_MODEL_ENDPOINT=http://127.0.0.1:5000/predict \
 node ./dist/sim/examples/statistical-runner.js
 ```
 
+Random-vs-model using the fastest validated local `word_policy_v1` path:
+
+```bash
+TOTAL_GAMES=200 \
+CONCURRENCY=10 \
+BATTLE_TIMEOUT_MS=180000 \
+RL_MODEL_ID=word_policy_v1 \
+RL_MODEL_PROFILE=joint-policy \
+RL_MODEL_TRANSPORT=local \
+RL_ALLOW_VOLUNTARY_SWITCHES=false \
+BENCHMARK_QUIET=true \
+BENCHMARK_FAST_MODE=true \
+BENCHMARK_PREGENERATE_TEAMS=true \
+RL_AGENT_METRICS_ENABLED=false \
+node ./dist/sim/examples/statistical-runner.js \
+  --rl-model-id word_policy_v1 \
+  --rl-model-profile joint-policy \
+  --rl-model-transport local
+```
+
+Notes for this local path:
+
+- no Python model server is required
+- recent validated throughput was about `914 games/min`
+- `BENCHMARK_PREGENERATE_TEAMS=true` removes random team generation from the timed section
+
 Model-vs-model:
 
 ```bash

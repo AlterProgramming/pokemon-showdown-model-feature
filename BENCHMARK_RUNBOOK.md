@@ -96,6 +96,41 @@ MSYS_NO_PATHCONV=1 powershell.exe -ExecutionPolicy Bypass -File ./scripts/run-st
   -RLModelEndpoint "http://127.0.0.1:5000/predict"
 ```
 
+### Fastest validated local word-policy path
+
+If you are benchmarking `word_policy_v1`, the fastest validated path is the in-process local transport, with benchmark telemetry and replay capture work trimmed on the hot path.
+
+From Git Bash in the `pokemon-showdown` repo:
+
+```bash
+TOTAL_GAMES=200 \
+CONCURRENCY=10 \
+BATTLE_TIMEOUT_MS=180000 \
+RL_MODEL_ID=word_policy_v1 \
+RL_MODEL_PROFILE=joint-policy \
+RL_MODEL_TRANSPORT=local \
+RL_ALLOW_VOLUNTARY_SWITCHES=false \
+BENCHMARK_QUIET=true \
+BENCHMARK_FAST_MODE=true \
+BENCHMARK_PREGENERATE_TEAMS=true \
+RL_AGENT_METRICS_ENABLED=false \
+node ./dist/sim/examples/statistical-runner.js \
+  --rl-model-id word_policy_v1 \
+  --rl-model-profile joint-policy \
+  --rl-model-transport local
+```
+
+Latest validated result on this path:
+
+- about `914 games/min` on `200` games with `CONCURRENCY=10`
+
+Notes:
+
+- No HTTP or IPC model server is needed for this path.
+- `BENCHMARK_PREGENERATE_TEAMS=true` moves random team generation out of the timed section.
+- `BENCHMARK_FAST_MODE=true` disables replay and switch-accounting work that is useful for analysis but not for peak-throughput measurement.
+- `RL_AGENT_METRICS_ENABLED=false` disables RL-agent timing telemetry on the request hot path.
+
 With replay capture:
 
 ```bash
@@ -187,3 +222,5 @@ If the machine is already set up, the shortest path is:
 2. Open another terminal in `pokemon-showdown`.
 3. Run either `run-statistical-runner.ps1` or `run-model-vs-model.ps1`.
 4. Add replay capture flags only when needed.
+
+For `word_policy_v1` local benchmarking, skip step `1` and use the in-process command above instead.
