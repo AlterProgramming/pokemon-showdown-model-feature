@@ -113,6 +113,7 @@ RL_ALLOW_VOLUNTARY_SWITCHES=false \
 BENCHMARK_QUIET=true \
 BENCHMARK_FAST_MODE=true \
 BENCHMARK_PREGENERATE_TEAMS=true \
+BENCHMARK_WARMUP_GAMES=100 \
 RL_AGENT_METRICS_ENABLED=false \
 node ./dist/sim/examples/statistical-runner.js \
   --rl-model-id word_policy_v1 \
@@ -122,12 +123,13 @@ node ./dist/sim/examples/statistical-runner.js \
 
 Latest validated result on this path:
 
-- about `914 games/min` on `200` games with `CONCURRENCY=10`
+- about `1023 games/min` on `1000` games with `CONCURRENCY=10` and `BENCHMARK_WARMUP_GAMES=100`
 
 Notes:
 
 - No HTTP or IPC model server is needed for this path.
 - `BENCHMARK_PREGENERATE_TEAMS=true` moves random team generation out of the timed section.
+- `BENCHMARK_WARMUP_GAMES=100` warms the local policy and sim loop before timing starts.
 - `BENCHMARK_FAST_MODE=true` disables replay and switch-accounting work that is useful for analysis but not for peak-throughput measurement.
 - `RL_AGENT_METRICS_ENABLED=false` disables RL-agent timing telemetry on the request hot path.
 

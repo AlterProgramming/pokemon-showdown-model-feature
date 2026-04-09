@@ -69,6 +69,7 @@ const BENCHMARK_QUIET = parseBooleanOption(process.env.BENCHMARK_QUIET) ?? false
 const BENCHMARK_FAST_MODE = parseBooleanOption(process.env.BENCHMARK_FAST_MODE) ?? false;
 const TRACK_SWITCH_STATS = !BENCHMARK_FAST_MODE && (parseBooleanOption(process.env.BENCHMARK_TRACK_SWITCH_STATS) ?? true);
 const PREGENERATE_TEAMS = parseBooleanOption(process.env.BENCHMARK_PREGENERATE_TEAMS) ?? true;
+const BENCHMARK_WARMUP_GAMES = Number(process.env.BENCHMARK_WARMUP_GAMES || 0);
 const activeBattleAborters = new Map<number, (reason?: string) => void>();
 const replayDashboardTiles: ReplayDashboardTile[] = [];
 const preparedTeams = new Map<number, PreparedTeams>();
@@ -287,6 +288,7 @@ function printStats() {
 	console.log(`Saved Replays: ${savedReplays}`);
 	console.log(`Benchmark Fast Mode: ${BENCHMARK_FAST_MODE ? "yes" : "no"}`);
 	console.log(`Pregenerated Teams: ${PREGENERATE_TEAMS ? "yes" : "no"}`);
+	console.log(`Warmup Games: ${BENCHMARK_WARMUP_GAMES}`);
 	console.log(`RL Model Profile: ${RL_PROFILE.profile}`);
 	console.log(`Profile Description: ${RL_PROFILE.description}`);
 	console.log(`Voluntary Switches Enabled: ${RL_PROFILE.allowVoluntarySwitches ? "yes" : "no"}`);
@@ -489,6 +491,14 @@ async function runExperiment() {
 	if (PREGENERATE_TEAMS) {
 		for (let gameNumber = 1; gameNumber <= TOTAL_GAMES; gameNumber++) {
 			preparedTeams.set(gameNumber, buildPreparedTeams());
+		}
+	}
+	if (BENCHMARK_WARMUP_GAMES > 0) {
+		for (let warmupIndex = 1; warmupIndex <= BENCHMARK_WARMUP_GAMES; warmupIndex++) {
+			preparedTeams.set(-warmupIndex, buildPreparedTeams());
+		}
+		for (let warmupIndex = 1; warmupIndex <= BENCHMARK_WARMUP_GAMES; warmupIndex++) {
+			await runSingleBattle(-warmupIndex);
 		}
 	}
 	experimentStartedAt = Date.now();

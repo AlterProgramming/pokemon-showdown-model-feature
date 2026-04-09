@@ -88,6 +88,7 @@ RL_ALLOW_VOLUNTARY_SWITCHES=false \
 BENCHMARK_QUIET=true \
 BENCHMARK_FAST_MODE=true \
 BENCHMARK_PREGENERATE_TEAMS=true \
+BENCHMARK_WARMUP_GAMES=100 \
 RL_AGENT_METRICS_ENABLED=false \
 node ./dist/sim/examples/statistical-runner.js \
   --rl-model-id word_policy_v1 \
@@ -98,8 +99,9 @@ node ./dist/sim/examples/statistical-runner.js \
 Notes for this local path:
 
 - no Python model server is required
-- recent validated throughput was about `914 games/min`
+- recent validated throughput was about `1023 games/min`
 - `BENCHMARK_PREGENERATE_TEAMS=true` removes random team generation from the timed section
+- `BENCHMARK_WARMUP_GAMES=100` warms the local policy and simulator loop before timing starts
 
 Model-vs-model:
 
