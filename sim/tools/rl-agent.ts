@@ -1,6 +1,6 @@
 /**
  * RL Agent Player AI
- * Uses external Python model via HTTP fetch.
+ * Uses an external Python model via HTTP, local IPC, or a local in-process transport.
  * Assumes:
  *  - 1v1 battles
  *  - No mega, z-move, dynamax, tera
@@ -13,6 +13,7 @@ import type { PRNGSeed } from "../prng";
 import { ProtocolStateTracker } from "./protocol-state-tracker";
 import {parseBooleanOption, resolveRLModelProfileConfig, type RLModelProfile} from "./rl-model-profiles";
 import { RLModelClient } from "./rl-model-client";
+import {ensureLocalWordPolicyHandler} from "./word-policy-local";
 import {
 	buildLegalMoveOptions,
 	buildLegalReviveTargets,
@@ -177,6 +178,8 @@ export class RLAgentAI extends BattlePlayer {
 	private readonly modelID: string | undefined;
 	private readonly modelProfile: RLModelProfile;
 	private readonly allowVoluntarySwitches: boolean;
+	private readonly requiresStateVector: boolean;
+	private readonly useCompactWordPolicyPayload: boolean;
 	private readonly modelClient: RLModelClient;
 	private readonly onDecision: ((record: RLAgentDecisionRecord) => void) | undefined;
 	private tracker = new ProtocolStateTracker();
@@ -185,6 +188,7 @@ export class RLAgentAI extends BattlePlayer {
 		playerStream: ObjectReadWriteStream<string>,
 		options: {
 			endpoint?: string;
+			transport?: "http" | "ipc" | "local";
 			modelID?: string;
 			modelProfile?: RLModelProfile;
 			allowVoluntarySwitches?: boolean;
@@ -197,14 +201,26 @@ export class RLAgentAI extends BattlePlayer {
 			options.modelProfile ?? process.env.RL_MODEL_PROFILE,
 			options.allowVoluntarySwitches ?? parseBooleanOption(process.env.RL_ALLOW_VOLUNTARY_SWITCHES),
 		);
-		const endpoint = options.endpoint || "http://127.0.0.1:5000/predict";
+		const envTransport = process.env.RL_MODEL_TRANSPORT;
+		const transport = options.transport || (envTransport === "ipc" || envTransport === "local" ? envTransport : "http");
+		const endpoint = options.endpoint || (
+			transport === "ipc" ? "ipc://word-policy" :
+			transport === "local" ? "local://default" :
+			"http://127.0.0.1:5000/predict"
+		);
 		const modelID = options.modelID ?? process.env.RL_MODEL_ID;
 		this.modelID = modelID;
 		this.modelProfile = profileConfig.profile;
 		this.allowVoluntarySwitches = profileConfig.allowVoluntarySwitches;
+		this.requiresStateVector = modelID !== "word_policy_v1";
+		this.useCompactWordPolicyPayload = modelID === "word_policy_v1";
 		this.onDecision = options.onDecision;
+		if (transport === "local" && modelID === "word_policy_v1") {
+			ensureLocalWordPolicyHandler(endpoint);
+		}
 		this.modelClient = new RLModelClient({
 			endpoint,
+			transport,
 			modelID,
 			modelProfile: this.modelProfile,
 		});
@@ -263,15 +279,17 @@ export class RLAgentAI extends BattlePlayer {
 				const {snapshot, stateVector} = this.buildModelState(perspective);
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
-					state_vector: stateVector,
+					...(stateVector ? {state_vector: stateVector} : {}),
 					battle_state: snapshot,
 					perspective_player: perspective,
 					legal_moves: [],
 					legal_switches: legalSwitches,
 					legal_revives: legalRevives,
-					forceSwitch: request.forceSwitch,
-					reviving: hasReviveRequest,
-					side: request.side,
+					...(this.useCompactWordPolicyPayload ? {} : {
+						forceSwitch: request.forceSwitch,
+						reviving: hasReviveRequest,
+						side: request.side,
+					}),
 				};
 
 				const action = await this.queryModel(modelData);
@@ -356,13 +374,15 @@ export class RLAgentAI extends BattlePlayer {
 				const {snapshot, stateVector} = this.buildModelState(perspective);
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
-					state_vector: stateVector,
+					...(stateVector ? {state_vector: stateVector} : {}),
 					battle_state: snapshot,
 					perspective_player: perspective,
 					legal_moves: possibleMoves,
 					legal_switches: canSwitch,
-					active: request.active,
-					side: request.side,
+					active: this.useCompactWordPolicyPayload
+						? [{trapped: !!active?.trapped, maybeTrapped: !!active?.maybeTrapped}]
+						: request.active,
+					...(this.useCompactWordPolicyPayload ? {} : {side: request.side}),
 				};
 				
 				const modelResponse = await this.queryModel(modelData);
@@ -483,13 +503,13 @@ export class RLAgentAI extends BattlePlayer {
 		}
 	}
 
-	private buildModelState(perspective: "p1" | "p2"): {snapshot: AnyObject, stateVector: number[]} {
+	private buildModelState(perspective: "p1" | "p2"): {snapshot: AnyObject, stateVector?: number[]} {
 		const buildStart = Date.now();
 		try {
 			const snapshot = this.tracker.getSnapshot();
 			return {
 				snapshot,
-				stateVector: this.tracker.encodeState(snapshot, perspective),
+				...(this.requiresStateVector ? {stateVector: this.tracker.encodeState(snapshot, perspective)} : {}),
 			};
 		} finally {
 			recordTiming(rlAgentMetrics.stateVectorBuilds, Date.now() - buildStart);
@@ -509,10 +529,12 @@ export class RLAgentAI extends BattlePlayer {
 	}
 
 	private captureDecision(record: RLAgentDecisionRecord) {
+		if (!this.onDecision) return;
 		this.onDecision?.(record);
 	}
 
 	private cloneForCapture(value: AnyObject | null) {
+		if (!this.onDecision) return value;
 		if (!value) return null;
 		try {
 			return JSON.parse(JSON.stringify(value));

@@ -39,9 +39,15 @@ const REPLAY_GRID = parseBooleanOption(process.env.REPLAY_GRID) ?? false;
 const REPLAY_GRID_REFRESH_SECONDS = Number(process.env.REPLAY_GRID_REFRESH_SECONDS || 2);
 const REPLAY_GRID_FILE_NAME = process.env.REPLAY_GRID_FILE_NAME || "random-vs-model-grid.html";
 const RL_MODEL_ENDPOINT = process.env.RL_MODEL_ENDPOINT || "http://127.0.0.1:5000/predict";
+const RL_MODEL_TRANSPORT = process.env.RL_MODEL_TRANSPORT || "http";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000);
+const BENCHMARK_QUIET = parseBooleanOption(process.env.BENCHMARK_QUIET) ?? false;
 const activeBattleAborters = new Map<number, (reason?: string) => void>();
 const replayDashboardTiles: ReplayDashboardTile[] = [];
+
+function progressLog(message: string) {
+	if (!BENCHMARK_QUIET) console.log(message);
+}
 
 function createBattleTimeoutError(gameNumber: number): Error {
 	return new Error(`Battle ${gameNumber} timed out after ${formatDurationMs(BATTLE_TIMEOUT_MS)}.`);
@@ -228,6 +234,7 @@ function printStats() {
 	console.log(`RL Model Profile: ${RL_PROFILE.profile}`);
 	console.log(`Profile Description: ${RL_PROFILE.description}`);
 	console.log(`Voluntary Switches Enabled: ${RL_PROFILE.allowVoluntarySwitches ? "yes" : "no"}`);
+	console.log(`RL Model Transport: ${RL_MODEL_TRANSPORT}`);
 	console.log(`RL Model Endpoint: ${RL_MODEL_ENDPOINT}`);
 	console.log(`Completed Games: ${completed}`);
 	console.log(`RL Wins: ${rlWins}`);
@@ -401,7 +408,7 @@ function maybeSaveReplay(gameNumber: number, result: BattleResult) {
 		title: `Random vs RL (${RL_PROFILE.profile}) - Game ${gameNumber}`,
 	});
 	savedReplays++;
-	console.log(`[replay] Saved ${outcome} replay: ${replayPath}`);
+	progressLog(`[replay] Saved ${outcome} replay: ${replayPath}`);
 }
 
 process.on("SIGINT", () => {
@@ -420,17 +427,17 @@ async function runExperiment() {
 	resetRLAgentMetrics();
 	if (REPLAY_GRID) {
 		updateReplayDashboard();
-		console.log(`[replay-grid] Dashboard: ${path.resolve(REPLAY_OUTPUT_DIR, REPLAY_GRID_FILE_NAME)}`);
+		progressLog(`[replay-grid] Dashboard: ${path.resolve(REPLAY_OUTPUT_DIR, REPLAY_GRID_FILE_NAME)}`);
 	}
 	let runningGames = 0;
 	const heartbeatHandle = setInterval(() => {
-		printHeartbeat(runningGames);
+		if (!BENCHMARK_QUIET) printHeartbeat(runningGames);
 	}, HEARTBEAT_INTERVAL_MS);
 
 	async function worker(gameNumber: number) {
 		if (stopRequested) return;
 		runningGames++;
-		console.log(`[battle] Starting game ${gameNumber}`);
+		progressLog(`[battle] Starting game ${gameNumber}`);
 
 		try {
 			const result = await runSingleBattle(gameNumber);
@@ -445,7 +452,7 @@ async function runExperiment() {
 			maybeSaveReplay(gameNumber, result);
 
 			completed++;
-			console.log(`Completed ${completed}`);
+			progressLog(`Completed ${completed}`);
 		} catch (error) {
 			failed++;
 			if (isBattleTimeoutError(error)) timedOut++;
