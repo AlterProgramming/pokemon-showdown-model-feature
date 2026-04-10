@@ -3,8 +3,8 @@
  * Reconstructs the public battle snapshot consumed by the Python model.
  **********************************************************************/
 
-import {Dex, toID} from '../dex';
-import type {ChoiceRequest, SideRequestData} from '../side';
+import { Dex, toID } from '../dex';
+import type { ChoiceRequest, SideRequestData } from '../side';
 
 export type PlayerID = 'p1' | 'p2';
 
@@ -68,7 +68,7 @@ interface ParsedCondition {
 	fainted?: boolean;
 }
 
-interface SnapshotMon {
+export interface SnapshotMon {
 	uid: string;
 	player: PlayerID;
 	species?: string;
@@ -86,34 +86,36 @@ interface SnapshotMon {
 	observed_moves: string[];
 }
 
-interface SnapshotSide {
+export interface SnapshotSide {
 	active_uid?: string;
 	slots: (string | undefined)[];
 	side_conditions: Record<string, number>;
 }
 
-interface BattleSnapshot {
+export interface BattleSnapshot {
 	turn_index: number;
 	field: {
-		weather?: string;
-		global_conditions: string[];
+		weather?: string,
+		global_conditions: string[],
 	};
 	p1: SnapshotSide;
 	p2: SnapshotSide;
 	mons: Record<string, SnapshotMon>;
 }
 
+type MoveChoiceRequest = Extract<ChoiceRequest, { active: unknown[] }>;
+
 export class ProtocolStateTracker {
 	private turnIndex = 0;
 	private perspectivePlayer: PlayerID | null = null;
-	private revealCounter: Record<PlayerID, number> = {p1: 0, p2: 0};
+	private revealCounter: Record<PlayerID, number> = { p1: 0, p2: 0 };
 	private weather?: string;
 	private globalConditions = new Set<string>();
 
 	private mons = new Map<string, MonState>();
 	private sides: Record<PlayerID, SideState> = {
-		p1: {slots: new Array(6).fill(undefined), sideConditions: {}},
-		p2: {slots: new Array(6).fill(undefined), sideConditions: {}},
+		p1: { slots: new Array(6).fill(undefined), sideConditions: {} },
+		p2: { slots: new Array(6).fill(undefined), sideConditions: {} },
 	};
 
 	applyChunk(chunk: string) {
@@ -127,9 +129,9 @@ export class ProtocolStateTracker {
 		if (!this.isPlayerID(request.side.id)) return;
 		const player = request.side.id;
 		this.perspectivePlayer = player;
-		this.hydrateOwnSide(request.side as SideRequestData & {id: PlayerID});
-		if (Array.isArray(request.active) && request.active.length && this.sides[player].activeUid) {
-			const mon = this.mons.get(this.sides[player].activeUid!);
+		this.hydrateOwnSide(request.side as SideRequestData & { id: PlayerID });
+		if (this.hasActiveRequest(request) && request.active.length && this.sides[player].activeUid) {
+			const mon = this.mons.get(this.sides[player].activeUid);
 			const moveEntries = request.active[0]?.moves || [];
 			if (mon && Array.isArray(moveEntries)) {
 				for (const moveEntry of moveEntries) {
@@ -155,12 +157,12 @@ export class ProtocolStateTracker {
 			p1: {
 				active_uid: this.sides.p1.activeUid,
 				slots: [...this.sides.p1.slots],
-				side_conditions: {...this.sides.p1.sideConditions},
+				side_conditions: { ...this.sides.p1.sideConditions },
 			},
 			p2: {
 				active_uid: this.sides.p2.activeUid,
 				slots: [...this.sides.p2.slots],
-				side_conditions: {...this.sides.p2.sideConditions},
+				side_conditions: { ...this.sides.p2.sideConditions },
 			},
 			mons: Object.fromEntries(
 				[...this.mons.entries()].map(([uid, mon]) => [uid, {
@@ -177,7 +179,7 @@ export class ProtocolStateTracker {
 					terastallized: mon.terastallized,
 					public_revealed: mon.publicRevealed,
 					fainted: mon.fainted,
-					boosts: {...mon.boosts},
+					boosts: { ...mon.boosts },
 					observed_moves: [...mon.observedMoves],
 				}]),
 			) as Record<string, SnapshotMon>,
@@ -194,8 +196,8 @@ export class ProtocolStateTracker {
 	encodeState(state: BattleSnapshot, perspectivePlayer = this.perspectivePlayer || 'p2'): number[] {
 		const other = perspectivePlayer === 'p1' ? 'p2' : 'p1';
 		const mons = state.mons;
-		const myActive = state[perspectivePlayer].active_uid ? mons[state[perspectivePlayer].active_uid!] : undefined;
-		const oppActive = state[other].active_uid ? mons[state[other].active_uid!] : undefined;
+		const myActive = state[perspectivePlayer].active_uid ? mons[state[perspectivePlayer].active_uid] : undefined;
+		const oppActive = state[other].active_uid ? mons[state[other].active_uid] : undefined;
 
 		const vec: number[] = [];
 		vec.push(...this.monFeatures(myActive, perspectivePlayer));
@@ -324,7 +326,7 @@ export class ProtocolStateTracker {
 		}
 	}
 
-	private hydrateOwnSide(side: SideRequestData & {id: PlayerID}) {
+	private hydrateOwnSide(side: SideRequestData & { id: PlayerID }) {
 		const player = side.id;
 		this.sides[player].activeUid = undefined;
 
@@ -350,7 +352,7 @@ export class ProtocolStateTracker {
 			if (parsed.maxHP !== undefined && mon.maxHP === undefined) {
 				mon.maxHP = parsed.maxHP;
 			}
-			this.applyCondition(mon, parsed, {clearStatus: true});
+			this.applyCondition(mon, parsed, { clearStatus: true });
 			if (entry.item) {
 				const item = Dex.items.get(entry.item).name || entry.item;
 				mon.item = item;
@@ -535,7 +537,7 @@ export class ProtocolStateTracker {
 		const sourceUID = this.resolveActiveUID(sourceRef, undefined, true);
 		const targetUID = this.resolveActiveUID(targetRef, undefined, true);
 		if (!sourceUID || !targetUID) return;
-		this.mons.get(targetUID)!.boosts = {...this.mons.get(sourceUID)!.boosts};
+		this.mons.get(targetUID)!.boosts = { ...this.mons.get(sourceUID)!.boosts };
 	}
 
 	private handleSwapBoost(sourceRef: string | undefined, targetRef: string | undefined, statsText: string | undefined) {
@@ -544,7 +546,9 @@ export class ProtocolStateTracker {
 		if (!sourceUID || !targetUID) return;
 		const source = this.mons.get(sourceUID)!;
 		const target = this.mons.get(targetUID)!;
-		for (const stat of (statsText || '').split(',').map(text => this.normalizeStat(text.trim())).filter(Boolean) as StatID[]) {
+		for (
+			const stat of (statsText || '').split(',').map(text => this.normalizeStat(text.trim())).filter(Boolean) as StatID[]
+		) {
 			[source.boosts[stat], target.boosts[stat]] = [target.boosts[stat], source.boosts[stat]];
 		}
 	}
@@ -664,7 +668,11 @@ export class ProtocolStateTracker {
 		return uid;
 	}
 
-	private resolveActiveUID(ref: string | undefined, details: string | undefined, createIfMissing: boolean): string | undefined {
+	private resolveActiveUID(
+		ref: string | undefined,
+		details: string | undefined,
+		createIfMissing: boolean,
+	): string | undefined {
 		const player = this.playerFromRef(ref);
 		if (!player) return undefined;
 
@@ -712,7 +720,7 @@ export class ProtocolStateTracker {
 				.filter(Boolean)
 				.filter(uid => {
 					const mon = this.mons.get(uid!);
-					return !!mon?.species && this.normalizeName(mon.species) === this.normalizeName(detailInfo.species!);
+					return !!mon?.species && this.normalizeName(mon.species) === this.normalizeName(detailInfo.species);
 				}) as string[];
 			if (matches.length === 1) return matches[0];
 		}
@@ -787,7 +795,7 @@ export class ProtocolStateTracker {
 	private parseMonRef(ref?: string) {
 		const text = (ref || '').trim();
 		const colon = text.indexOf(':');
-		if (colon < 0) return {player: this.playerFromRef(text), name: undefined};
+		if (colon < 0) return { player: this.playerFromRef(text), name: undefined };
 		return {
 			player: this.playerFromRef(text),
 			name: text.slice(colon + 1).trim() || undefined,
@@ -843,7 +851,7 @@ export class ProtocolStateTracker {
 		return parsed;
 	}
 
-	private applyCondition(mon: MonState, parsed: ParsedCondition, options: {clearStatus?: boolean} = {}) {
+	private applyCondition(mon: MonState, parsed: ParsedCondition, options: { clearStatus?: boolean } = {}) {
 		if (parsed.maxHP !== undefined) mon.maxHP = parsed.maxHP;
 		if (parsed.hp !== undefined) {
 			mon.hp = parsed.hp;
@@ -875,6 +883,10 @@ export class ProtocolStateTracker {
 
 	private isPlayerID(value?: string): value is PlayerID {
 		return value === 'p1' || value === 'p2';
+	}
+
+	private hasActiveRequest(request: ChoiceRequest): request is MoveChoiceRequest {
+		return Array.isArray((request as Partial<MoveChoiceRequest>).active);
 	}
 
 	private normalizeStatus(value?: string): StatusID | undefined {
