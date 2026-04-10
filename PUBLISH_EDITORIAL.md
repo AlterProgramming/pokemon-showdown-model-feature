@@ -237,3 +237,50 @@ cluster_counts:
 - Add a receive-test command that skips style and focuses on type and runtime blockers.
 - Add a final pre-push note template that records what the attempt concretely improved.
 - Extend release lint with state-mutation and concurrency rules aimed at daemon, bridge, and runner code.
+
+## Tick Ledger
+
+Start this ledger at zero from the scheduling change forward. Do not backfill old runs.
+
+```text
+ticks:
+  local_validation: 0
+  subagent_wait: 0
+  integration: 0
+```
+
+Meaning:
+
+- `local_validation`
+  - release-lint
+  - send-lint
+  - targeted test or type gates
+- `subagent_wait`
+  - time spent waiting for delegated branches to return validated results
+- `integration`
+  - regrouping
+  - commit shaping
+  - artifact cleanup
+  - push prep
+
+### Tick Update Rule
+
+- Add `+1` when a category becomes the dominant bottleneck in a pass.
+- Add `+2` only when that category clearly consumed multiple avoidable reruns or a long blocked wait.
+- Prefer undercounting to inflating the ledger.
+
+## Scheduling Rule
+
+Validation should be batched, not fired on every local edit.
+
+```text
+edit -> local branch check -> delegated branch check -> integration -> one fix:send sweep -> final release/send gate
+```
+
+Rules:
+
+- Do not run `release-stability-lint` again until a coherent patch set lands.
+- Do not run strict `lint:send` repeatedly during semantic cleanup.
+- Use branch-scoped release-lint as the semantic stop condition inside worker branches.
+- Reserve `fix:send` for the integrated dirty frontier, not each branch in isolation.
+- Run broader tests only after release and send gates are stable enough to justify the cost.
