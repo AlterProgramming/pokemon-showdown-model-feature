@@ -4,6 +4,7 @@ import * as path from 'path';
 import {load as loadConfig} from './config-loader';
 import {ProtocolStateTracker} from '../sim/tools/protocol-state-tracker';
 import type {ChoiceRequest} from '../sim/side';
+import type {BattleSnapshot, SnapshotMon} from '../sim/tools/protocol-state-tracker';
 import {
 	buildLegalMoveOptions,
 	buildLegalReviveTargets,
@@ -142,6 +143,24 @@ function isObject(value: unknown): value is Record<string, AnyObject> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function normalizeRequestRqid(value: unknown) {
+	if (typeof value === 'number' && Number.isFinite(value)) return value;
+	if (typeof value === 'string') {
+		const trimmed = value.trim();
+		if (trimmed) return trimmed;
+	}
+	return undefined;
+}
+
+function deriveRequestSidePlayer(side: AnyObject | undefined): 'p1' | 'p2' | undefined {
+	const rawSideId = side?.id as unknown;
+	return rawSideId === 'p1' || rawSideId === 'p2' ? rawSideId : undefined;
+}
+
+function hasChoiceRequestShape(request: AnyObject | undefined): request is ChoiceRequest {
+	return !!request && !!deriveRequestSidePlayer(request.side);
+}
+
 function toStringLines(value: string[] | string | undefined): string[] {
 	if (!value) return [];
 	if (typeof value === 'string') {
@@ -168,7 +187,8 @@ function normalizeLogLength(payload: BrowserBridgeRequest) {
 
 function normalizeLogSource(payload: BrowserBridgeRequest) {
 	const browserBridgeMeta = getBrowserBridgeMeta(payload);
-	const rawValue = pickFirst(payload.log_source, browserBridgeMeta?.log_source);
+	const rawValue = payload.log_source ??
+		(typeof browserBridgeMeta?.log_source === 'string' ? browserBridgeMeta.log_source : undefined);
 	if (typeof rawValue !== 'string') return undefined;
 	const trimmed = rawValue.trim();
 	return trimmed || undefined;
@@ -302,7 +322,8 @@ function deriveLegalSwitches(
 	if (!shouldIncludeVoluntarySwitches(request, allowVoluntarySwitches)) return [];
 	const pokemon = side?.pokemon;
 	if (!Array.isArray(pokemon) || !pokemon.length) return [];
-	const player = side.id === 'p1' ? 'p1' : 'p2';
+	const player = deriveRequestSidePlayer(side);
+	if (!player) return [];
 	const teamEntries = buildChoiceTargetEntries(player, pokemon, tracker);
 	const normalizedProvidedTargets = normalizeProvidedChoiceTargets(
 		Array.isArray(request?.legal_switches) && request.legal_switches.length ? request.legal_switches :
@@ -318,7 +339,8 @@ function deriveLegalSwitches(
 function deriveLegalRevives(request: AnyObject | undefined, side: AnyObject | undefined, tracker: ProtocolStateTracker) {
 	const pokemon = side?.pokemon;
 	if (!Array.isArray(pokemon) || !pokemon.length) return [];
-	const player = side.id === 'p1' ? 'p1' : 'p2';
+	const player = deriveRequestSidePlayer(side);
+	if (!player) return [];
 	const teamEntries = buildChoiceTargetEntries(player, pokemon, tracker);
 	const normalizedProvidedTargets = normalizeProvidedChoiceTargets(
 		Array.isArray(request?.legal_revives) && request.legal_revives.length ? request.legal_revives :
@@ -350,8 +372,9 @@ function normalizeControlEpoch(value: unknown) {
 }
 
 function buildFallbackRequestIdentity(roomid: string, request: AnyObject | undefined) {
-	if (request?.rqid !== undefined && request?.rqid !== null && request?.rqid !== '') {
-		return `${roomid}:rqid:${request.rqid}`;
+	const rqid = normalizeRequestRqid(request?.rqid);
+	if (rqid !== undefined) {
+		return `${roomid}:rqid:${rqid}`;
 	}
 	const active = Array.isArray(request?.active) ? request.active[0] : null;
 	const moves = Array.isArray(active?.moves) ? active.moves.map((move: AnyObject) => [
@@ -500,6 +523,12 @@ function normalizeObservedMoveName(value: unknown) {
 	return value.trim().toLowerCase().replace(/\s+/g, '');
 }
 
+function normalizeSnapshotStatus(value: unknown): SnapshotMon['status'] {
+	return value === 'brn' || value === 'par' || value === 'psn' || value === 'tox' || value === 'slp' || value === 'frz' ?
+		value :
+		undefined;
+}
+
 function mergeBoosts(existing: unknown, incoming: unknown) {
 	const merged: Record<string, number> = {};
 	for (const source of [existing, incoming]) {
@@ -513,10 +542,15 @@ function mergeBoosts(existing: unknown, incoming: unknown) {
 	return merged;
 }
 
-function mergeBrowserMonObservation(existing: AnyObject | undefined, incoming: AnyObject, player: 'p1' | 'p2') {
-	const merged: AnyObject = {
-		uid: typeof incoming.uid === 'string' && incoming.uid ? incoming.uid : existing?.uid,
+function mergeBrowserMonObservation(existing: SnapshotMon | undefined, incoming: AnyObject, player: 'p1' | 'p2', fallbackUid: string): SnapshotMon {
+	const merged: SnapshotMon = {
+		uid: typeof incoming.uid === 'string' && incoming.uid ? incoming.uid : existing?.uid ?? fallbackUid,
 		player: incoming.player === 'p1' || incoming.player === 'p2' ? incoming.player : existing?.player ?? player,
+		terastallized: Boolean(existing?.terastallized || incoming.terastallized),
+		public_revealed: Boolean(existing?.public_revealed || incoming.public_revealed),
+		fainted: incoming.fainted !== undefined ? !!incoming.fainted : !!existing?.fainted,
+		boosts: mergeBoosts(existing?.boosts, incoming.boosts),
+		observed_moves: mergeObservedMoves(existing?.observed_moves, incoming.observed_moves),
 	};
 	for (const key of ['species', 'ability', 'item', 'tera_type'] as const) {
 		const incomingValue = incoming[key];
@@ -529,12 +563,7 @@ function mergeBrowserMonObservation(existing: AnyObject | undefined, incoming: A
 		const incomingValue = incoming[key];
 		merged[key] = typeof incomingValue === 'number' && Number.isFinite(incomingValue) ? incomingValue : existing?.[key];
 	}
-	merged.status = typeof incoming.status === 'string' && incoming.status ? incoming.status : existing?.status;
-	merged.public_revealed = Boolean(existing?.public_revealed || incoming.public_revealed);
-	merged.fainted = incoming.fainted !== undefined ? !!incoming.fainted : !!existing?.fainted;
-	merged.terastallized = Boolean(existing?.terastallized || incoming.terastallized);
-	merged.boosts = mergeBoosts(existing?.boosts, incoming.boosts);
-	merged.observed_moves = mergeObservedMoves(existing?.observed_moves, incoming.observed_moves);
+	merged.status = normalizeSnapshotStatus(incoming.status) ?? existing?.status;
 	if (merged.hp_frac === undefined && typeof merged.hp === 'number' && typeof merged.max_hp === 'number' && merged.max_hp > 0) {
 		merged.hp_frac = Math.max(0, Math.min(1, merged.hp / merged.max_hp));
 	}
@@ -578,22 +607,19 @@ function extractBrowserObservations(payload: BrowserBridgeRequest) {
 }
 
 function mergeBrowserObservationsIntoBattleState(
-	stateInput: AnyObject,
+	stateInput: BattleSnapshot,
 	payload: BrowserBridgeRequest,
 ) {
 	const browserObservations = extractBrowserObservations(payload);
 	if (!browserObservations) return clone(stateInput);
 
-	const state = clone(stateInput);
+	const state = clone(stateInput) as BattleSnapshot;
 	const observedTurnIndex = pickFirst(browserObservations.turn_index, browserObservations.turnIndex);
 	if (typeof observedTurnIndex === 'number' && Number.isFinite(observedTurnIndex)) {
 		state.turn_index = observedTurnIndex;
 	}
 
 	const observedField = isObject(browserObservations.field) ? browserObservations.field : undefined;
-	if (!isObject(state.field)) {
-		state.field = {global_conditions: []};
-	}
 	if (typeof observedField?.weather === 'string' && observedField.weather) {
 		state.field.weather = observedField.weather;
 	}
@@ -608,11 +634,12 @@ function mergeBrowserObservationsIntoBattleState(
 	const observedMons = isObject(browserObservations.mons) ? browserObservations.mons : {};
 	for (const [uid, incoming] of Object.entries(observedMons)) {
 		if (!isObject(incoming) || !uid) continue;
-		const player = incoming.player === 'p1' || incoming.player === 'p2' ? incoming.player : (
+		const rawPlayer = incoming.player as unknown;
+		const player = rawPlayer === 'p1' || rawPlayer === 'p2' ? rawPlayer : (
 			uid.startsWith('p1:') ? 'p1' : 'p2'
 		);
-		const existing = isObject(state.mons?.[uid]) ? state.mons[uid] : undefined;
-		state.mons[uid] = mergeBrowserMonObservation(existing, incoming, player);
+		const existing = state.mons[uid];
+		state.mons[uid] = mergeBrowserMonObservation(existing, incoming, player, uid);
 	}
 
 	return state;
@@ -674,10 +701,11 @@ export function normalizeBrowserModelRequest(
 	updateLinesOverride?: string[],
 ) {
 	const request = extractRequest(payload);
+	const settledRequest = hasChoiceRequestShape(request) ? request : null;
 	const tracker = trackerInput || new ProtocolStateTracker();
 	const updates = joinUpdateLines(updateLinesOverride ?? normalizeUpdateLines(payload));
 	if (updates) tracker.applyChunk(updates);
-	if (isObject(request) && isObject(request.side)) tracker.applyRequest(request as ChoiceRequest);
+	if (settledRequest) tracker.applyRequest(settledRequest);
 
 	const inferredBattleState = tracker.getSnapshot();
 	const battleState = mergeBrowserObservationsIntoBattleState(inferredBattleState, payload);
@@ -686,10 +714,10 @@ export function normalizeBrowserModelRequest(
 	const includeStateVector = config.modelKind !== 'entity';
 	const stateVector = includeStateVector ? tracker.encodeState(battleState, perspectivePlayer) : undefined;
 	const side = payload.side && isObject(payload.side) ? clone(payload.side) : clone(request?.side || null);
-	const requestActive = Array.isArray(request?.active) ? request.active : [];
+	const requestActive = settledRequest && 'active' in settledRequest && Array.isArray(settledRequest.active) ? settledRequest.active : [];
 	const active = Array.isArray(payload.active) && payload.active.length ? clone(payload.active) : clone(requestActive);
 	const activeForMoves = active.length ? active : requestActive;
-	const legalMoves = deriveLegalMoves(request, getPrimaryActivePokemon(activeForMoves));
+	const legalMoves = deriveLegalMoves(request, activeForMoves[0]);
 	const legalSwitches = deriveLegalSwitches(request, side, tracker, config.allowVoluntarySwitches);
 	const legalRevives = deriveLegalRevives(request, side, tracker);
 	const requestFlags = Object.fromEntries(
@@ -711,7 +739,7 @@ export function normalizeBrowserModelRequest(
 		...(side ? {side} : {}),
 		...(active.length ? {active} : {}),
 		...((payload.forceSwitch ?? request?.forceSwitch) !== undefined ? {forceSwitch: payload.forceSwitch ?? request?.forceSwitch} : {}),
-		...((payload.reviving ?? request?.reviving) ? {reviving: true} : {}),
+		...((payload.reviving ?? (isObject(request) ? request.reviving : undefined)) ? {reviving: true} : {}),
 		...requestFlags,
 	};
 }
@@ -728,10 +756,10 @@ export function validateNormalizedPredictRequest(normalized: AnyObject, request:
 		errors.push('Missing current request metadata.');
 		return errors;
 	}
-	if (request.rqid === undefined || request.rqid === null || request.rqid === '') {
+	if (normalizeRequestRqid(request.rqid) === undefined) {
 		errors.push('Missing request.rqid.');
 	}
-	const requestSide = request?.side?.id ?? normalized.side?.id;
+	const requestSide = deriveRequestSidePlayer(request.side) ?? deriveRequestSidePlayer(normalized.side);
 	if (requestSide !== 'p1' && requestSide !== 'p2') {
 		errors.push('Missing request.side.id.');
 	}
@@ -862,7 +890,7 @@ export class BrowserModelBridgeServer {
 		} catch {}
 	}
 
-	private async resolveModelServingKind(modelID: string | undefined) {
+	private resolveModelServingKind(modelID: string | undefined) {
 		const lookupModelID = modelID || this.config.modelID;
 		if (lookupModelID) {
 			if (lookupModelID.startsWith('entity_')) return 'entity';
@@ -933,28 +961,37 @@ export class BrowserModelBridgeServer {
 		}
 	}
 
+	private updateLiveLedgerEntry(bridgeRequestId: string, mutator: (entry: BridgeLedgerEntry) => void) {
+		const liveEntry = this.requestLedger.get(bridgeRequestId);
+		if (!liveEntry) return null;
+		mutator(liveEntry);
+		liveEntry.updatedAt = Date.now();
+		return liveEntry;
+	}
+
 	private async settleLedgerEntry(
-		entry: BridgeLedgerEntry,
+		bridgeRequestId: string,
 		payload: BrowserBridgeRequest,
 		normalized: AnyObject,
 		request: AnyObject | undefined,
 	) {
 		try {
 			const proxied = await proxyToModelEndpoint(this.config.modelEndpoint, normalized, this.config.requestTimeoutMs);
-			entry.updatedAt = Date.now();
 			if (proxied.status < 200 || proxied.status >= 300) {
-				entry.status = 'failed';
-				entry.responseStatusCode = proxied.status;
-				entry.error = `Upstream model endpoint returned ${proxied.status}.`;
-				entry.details = truncateForLog(proxied.body) ? [truncateForLog(proxied.body)!] : undefined;
+				this.updateLiveLedgerEntry(bridgeRequestId, entry => {
+					entry.status = 'failed';
+					entry.responseStatusCode = proxied.status;
+					entry.error = `Upstream model endpoint returned ${proxied.status}.`;
+					entry.details = truncateForLog(proxied.body) ? [truncateForLog(proxied.body)!] : undefined;
+				});
 				await this.appendDebugLog(formatBrowserBridgeDebugSnapshot(payload, normalized, {
-					roomid: entry.roomid,
+					roomid: this.requestLedger.get(bridgeRequestId)?.roomid || getRoomId(payload, request),
 					rqid: request?.rqid,
 					route: '/predict',
-					requestSummary: entry.requestSummary,
+					requestSummary: this.requestLedger.get(bridgeRequestId)?.requestSummary || {},
 					upstreamStatus: proxied.status,
 					upstreamBodySnippet: truncateForLog(proxied.body),
-					error: entry.error,
+					error: `Upstream model endpoint returned ${proxied.status}.`,
 				}));
 				return;
 			}
@@ -962,30 +999,36 @@ export class BrowserModelBridgeServer {
 			try {
 				parsedBody = proxied.body ? JSON.parse(proxied.body) : {};
 			} catch (error) {
-				entry.status = 'failed';
-				entry.responseStatusCode = 502;
-				entry.error = error instanceof Error ? `Model response was not valid JSON: ${error.message}` : String(error);
+				const settledError = error instanceof Error ? `Model response was not valid JSON: ${error.message}` : String(error);
+				this.updateLiveLedgerEntry(bridgeRequestId, entry => {
+					entry.status = 'failed';
+					entry.responseStatusCode = 502;
+					entry.error = settledError;
+				});
 				await this.appendDebugLog(formatBrowserBridgeDebugSnapshot(payload, normalized, {
-					roomid: entry.roomid,
+					roomid: this.requestLedger.get(bridgeRequestId)?.roomid || getRoomId(payload, request),
 					rqid: request?.rqid,
 					route: '/predict',
-					requestSummary: entry.requestSummary,
+					requestSummary: this.requestLedger.get(bridgeRequestId)?.requestSummary || {},
 					upstreamStatus: proxied.status,
 					upstreamBodySnippet: truncateForLog(proxied.body),
-					error: entry.error,
+					error: settledError,
 				}));
 				return;
 			}
-			entry.status = 'completed';
-			entry.responseStatusCode = 200;
-			entry.responseBody = parsedBody;
+			this.updateLiveLedgerEntry(bridgeRequestId, entry => {
+				entry.status = 'completed';
+				entry.responseStatusCode = 200;
+				entry.responseBody = parsedBody;
+			});
 			if (shouldLogSuccessfulPredict(payload)) {
+				const liveEntry = this.requestLedger.get(bridgeRequestId);
 				await this.appendDebugLog(formatBrowserBridgeDebugSnapshot(payload, normalized, {
-					roomid: entry.roomid,
+					roomid: liveEntry?.roomid || getRoomId(payload, request),
 					rqid: request?.rqid,
 					route: '/predict',
 					requestSummary: {
-						...entry.requestSummary,
+						...(liveEntry?.requestSummary || {}),
 						bridge_status: 'completed',
 						dedupe_source: 'fresh',
 					},
@@ -994,19 +1037,22 @@ export class BrowserModelBridgeServer {
 				}));
 			}
 		} catch (error) {
-			entry.updatedAt = Date.now();
-			entry.status = 'unknown';
-			entry.responseStatusCode = 409;
-			entry.error = error instanceof Error ? error.message : String(error);
+			const settledError = error instanceof Error ? error.message : String(error);
+			this.updateLiveLedgerEntry(bridgeRequestId, entry => {
+				entry.status = 'unknown';
+				entry.responseStatusCode = 409;
+				entry.error = settledError;
+			});
 			await this.appendDebugLog(formatBrowserBridgeDebugSnapshot(payload, normalized, {
-				roomid: entry.roomid,
+				roomid: this.requestLedger.get(bridgeRequestId)?.roomid || getRoomId(payload, request),
 				rqid: request?.rqid,
 				route: '/predict',
-				requestSummary: entry.requestSummary,
-				error: entry.error,
+				requestSummary: this.requestLedger.get(bridgeRequestId)?.requestSummary || {},
+				error: settledError,
 			}));
 		} finally {
-			entry.promise = undefined;
+			const liveEntry = this.requestLedger.get(bridgeRequestId);
+			if (liveEntry && liveEntry.promise) liveEntry.promise = undefined;
 		}
 	}
 
@@ -1047,7 +1093,7 @@ export class BrowserModelBridgeServer {
 		const session = this.getSession(roomid);
 		const appliedUpdateLines = this.getAppliedUpdateLines(roomid, payload);
 		const requestedModelID = payload.model_id || payload.modelId || payload.modelID || this.config.modelID;
-		const modelServingKind = await this.resolveModelServingKind(requestedModelID);
+		const modelServingKind = this.resolveModelServingKind(requestedModelID);
 		const normalized = normalizeBrowserModelRequest(payload, {
 			defaultPerspectivePlayer: this.config.defaultPerspectivePlayer,
 			modelID: requestedModelID,
@@ -1141,14 +1187,17 @@ export class BrowserModelBridgeServer {
 					legal_revives: Array.isArray(normalized.legal_revives) ? normalized.legal_revives.length : 0,
 				},
 			};
-			entry.promise = this.settleLedgerEntry(entry, payload, normalized, request);
+			entry.promise = this.settleLedgerEntry(entry.bridgeRequestId, payload, normalized, request);
 			this.requestLedger.set(entry.bridgeRequestId, entry);
 			await entry.promise;
-			this.writeLedgerResponse(response, entry, 'fresh');
+			const settledEntry = this.requestLedger.get(entry.bridgeRequestId) || entry;
+			this.writeLedgerResponse(response, settledEntry, 'fresh');
 			return;
 		}
+		default:
+			writeJson(response, 404, {error: 'Not found'});
+			return;
 		}
-		writeJson(response, 404, {error: 'Not found'});
 	}
 
 	async handleHttpRequest(request: http.IncomingMessage, response: http.ServerResponse) {

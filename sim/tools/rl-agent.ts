@@ -20,6 +20,7 @@ import {
 	extractSwitchSlot,
 	getPrimaryActivePokemon,
 	hasReviveSelectionRequest,
+	type RLRequestSide,
 	requestSlotForChoice,
 } from "./rl-action-helpers";
 
@@ -228,7 +229,8 @@ export class RLAgentAI extends BattlePlayer {
 	override async receiveRequest(request: ChoiceRequest) {
 		this.tracker.applyRequest(request);
 		this.lastRequestSide = request.side.id;
-		const perspective = request.side.id === 'p1' ? 'p1' : 'p2';
+		const perspective: RLRequestSide = request.side.id === 'p1' ? 'p1' : 'p2';
+		const requestSide: RLRequestSide = perspective;
 		if (request.wait) return;
 		const decisionStart = Date.now();
 
@@ -239,8 +241,8 @@ export class RLAgentAI extends BattlePlayer {
 				const pokemon = request.side.pokemon;
 				const hasReviveRequest = hasReviveSelectionRequest(pokemon);
 				if (hasReviveRequest) rlAgentMetrics.actions.forceSwitchRequestsWithReviveSelection++;
-				const legalSwitches = hasReviveRequest ? [] : buildLegalSwitchTargets(request.side.id, pokemon, this.getStableSlot);
-				const legalRevives = hasReviveRequest ? buildLegalReviveTargets(request.side.id, pokemon, this.getStableSlot) : [];
+				const legalSwitches = hasReviveRequest ? [] : buildLegalSwitchTargets(requestSide, pokemon, this.getStableSlot);
+				const legalRevives = hasReviveRequest ? buildLegalReviveTargets(requestSide, pokemon, this.getStableSlot) : [];
 				const fallbackTargets = legalRevives.length ? legalRevives : legalSwitches;
 				const recordedAt = new Date().toISOString();
 
@@ -345,7 +347,7 @@ export class RLAgentAI extends BattlePlayer {
 
 				const possibleMoves = buildLegalMoveOptions(active);
 
-				const availableSwitches = buildLegalSwitchTargets(request.side.id, request.side.pokemon, this.getStableSlot);
+				const availableSwitches = buildLegalSwitchTargets(requestSide, request.side.pokemon, this.getStableSlot);
 				if (availableSwitches.length) rlAgentMetrics.actions.moveTurnRequestsWithSwitchOptions++;
 				const canSwitch = this.allowVoluntarySwitches ? availableSwitches : [];
 				if (!this.allowVoluntarySwitches && availableSwitches.length) {

@@ -21,12 +21,26 @@ export type RLMoveOption = {
 };
 
 type StableSlotResolver = (player: RLRequestSide, ident?: string, details?: string) => number | undefined;
+type RLChoicePokemon = {
+	ident: string;
+	details: string;
+	condition: string;
+	active?: boolean;
+	reviving?: boolean;
+};
+type RLMoveRequest = {
+	moves?: {
+		move: string;
+		id: string;
+		disabled?: string | boolean;
+	}[];
+};
 
 function buildChoiceTargets(
 	player: RLRequestSide,
-	team: SideRequestData['pokemon'],
+	team: RLChoicePokemon[],
 	resolveStableSlot: StableSlotResolver,
-	predicate: (pokemon: SideRequestData['pokemon'][number]) => boolean,
+	predicate: (target: RLChoiceTarget) => boolean,
 ) {
 	return team
 		.map((pokemon, i) => ({
@@ -76,7 +90,7 @@ export function buildLegalReviveTargets(
 	);
 }
 
-export function buildLegalMoveOptions(active: {moves?: {move: string, id: string, disabled?: boolean}[]}) {
+export function buildLegalMoveOptions(active: RLMoveRequest) {
 	return (active.moves || [])
 		.map((move, i) => ({
 			slot: i + 1,
