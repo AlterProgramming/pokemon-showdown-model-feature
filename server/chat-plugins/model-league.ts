@@ -1,11 +1,11 @@
 import * as crypto from "crypto";
-import {FS, Utils} from "../../lib";
+import { FS, Utils } from "../../lib";
 import {
 	getDefaultModelLeagueConfigPath,
 	loadModelLeagueConfig,
 	resolveModelLeagueConfigPath,
 } from "../model-league/config";
-import {ensureRatingEntries, sortRatings} from "../model-league/ratings";
+import { ensureRatingEntries, sortRatings } from "../model-league/ratings";
 import type {
 	ModelLeagueBenchmarkProgress,
 	ModelLeagueConfig,
@@ -18,12 +18,10 @@ import type {
 	ModelLeagueState,
 	ModelLeagueTeamConfig,
 	ModelLeagueTeamState,
-	ModelLeagueTrainingJob,
 } from "../model-league/types";
 
 const STATE_FILE_NAME = "state.json";
 const CONTROL_QUEUE_DIR = "control-requests";
-const NUMBER_REGEX = /^\s*[0-9]+\s*$/;
 
 function now() {
 	return new Date().toISOString();
@@ -39,7 +37,7 @@ function readJson<T>(path: string): T | null {
 	try {
 		return JSON.parse(raw) as T;
 	} catch (error: any) {
-		throw new Error(`Failed to parse ${path}: ${error.message}`);
+		throw new Error(`Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -177,8 +175,14 @@ function mergeCheckpointState(base: ModelLeagueCheckpointState, raw: Partial<Mod
 	base.lastTrainingJobAt = raw.lastTrainingJobAt ?? base.lastTrainingJobAt;
 	base.matchCount = typeof raw.matchCount === "number" ? raw.matchCount : base.matchCount;
 	base.liveMatchCount = typeof raw.liveMatchCount === "number" ? raw.liveMatchCount : base.liveMatchCount;
-	base.historicalMatchCount = typeof raw.historicalMatchCount === "number" ? raw.historicalMatchCount : base.historicalMatchCount;
-	base.benchmarkMatchCount = typeof raw.benchmarkMatchCount === "number" ? raw.benchmarkMatchCount : base.benchmarkMatchCount;
+	base.historicalMatchCount =
+		typeof raw.historicalMatchCount === "number" ?
+			raw.historicalMatchCount :
+			base.historicalMatchCount;
+	base.benchmarkMatchCount =
+		typeof raw.benchmarkMatchCount === "number" ?
+			raw.benchmarkMatchCount :
+			base.benchmarkMatchCount;
 	base.exampleCount = typeof raw.exampleCount === "number" ? raw.exampleCount : base.exampleCount;
 	base.trainingBuffer = raw.trainingBuffer || base.trainingBuffer;
 	base.metadata = raw.metadata ?? base.metadata;
@@ -193,8 +197,14 @@ function mergeTeamState(base: ModelLeagueTeamState, raw: Partial<ModelLeagueTeam
 	base.createdAt = typeof raw.createdAt === "string" ? raw.createdAt : base.createdAt;
 	base.matchCount = typeof raw.matchCount === "number" ? raw.matchCount : base.matchCount;
 	base.liveMatchCount = typeof raw.liveMatchCount === "number" ? raw.liveMatchCount : base.liveMatchCount;
-	base.historicalMatchCount = typeof raw.historicalMatchCount === "number" ? raw.historicalMatchCount : base.historicalMatchCount;
-	base.benchmarkMatchCount = typeof raw.benchmarkMatchCount === "number" ? raw.benchmarkMatchCount : base.benchmarkMatchCount;
+	base.historicalMatchCount =
+		typeof raw.historicalMatchCount === "number" ?
+			raw.historicalMatchCount :
+			base.historicalMatchCount;
+	base.benchmarkMatchCount =
+		typeof raw.benchmarkMatchCount === "number" ?
+			raw.benchmarkMatchCount :
+			base.benchmarkMatchCount;
 	base.metadata = raw.metadata ?? base.metadata;
 }
 
@@ -272,15 +282,15 @@ function normalizeState(raw: AnyObject | null, config: ModelLeagueConfig, config
 		}
 	}
 
-	if (Array.isArray(state.modelRatings)) base.modelRatings = state.modelRatings as ModelLeagueRatingEntry[];
-	if (Array.isArray(state.teamRatings)) base.teamRatings = state.teamRatings as ModelLeagueRatingEntry[];
+	if (Array.isArray(state.modelRatings)) base.modelRatings = state.modelRatings;
+	if (Array.isArray(state.teamRatings)) base.teamRatings = state.teamRatings;
 	if (Array.isArray(state.recentMatches)) base.recentMatches = state.recentMatches;
 	if (Array.isArray(state.recentBenchmarkRuns)) base.recentBenchmarkRuns = state.recentBenchmarkRuns;
 	if (Array.isArray(state.benchmarkProgress)) base.benchmarkProgress = state.benchmarkProgress;
-	if (Array.isArray(state.trainingJobs)) base.trainingJobs = state.trainingJobs as ModelLeagueTrainingJob[];
+	if (Array.isArray(state.trainingJobs)) base.trainingJobs = state.trainingJobs;
 	if (Array.isArray(state.processedControlRequestIds)) base.processedControlRequestIds = state.processedControlRequestIds;
 	if (Array.isArray(state.processedCompletedJobIds)) base.processedCompletedJobIds = state.processedCompletedJobIds;
-	if (state.stats) base.stats = {...base.stats, ...state.stats};
+	if (state.stats) base.stats = { ...base.stats, ...state.stats };
 
 	ensureRatingEntries(base, config);
 	sortRatings(base.modelRatings);
@@ -298,10 +308,10 @@ function getModelLeagueControlQueuePath(config: ModelLeagueConfig) {
 }
 
 function loadModelLeagueMaterializedState() {
-	const configPath = resolveModelLeagueConfigPath(null, {preferActive: true});
+	const configPath = resolveModelLeagueConfigPath(null, { preferActive: true });
 	const config = loadModelLeagueConfig(configPath);
 	const state = normalizeState(readJson<AnyObject>(getModelLeagueStatePath(config)), config, configPath);
-	return {config, state, configPath};
+	return { config, state, configPath };
 }
 
 async function loadControlRequests(config: ModelLeagueConfig) {
@@ -327,7 +337,7 @@ async function writeControlRequest(
 		type,
 		createdAt: now(),
 		requestedBy,
-		...(modelCheckpointId ? {modelCheckpointId} : {}),
+		...(modelCheckpointId ? { modelCheckpointId } : {}),
 	};
 	const path = joinPath(getModelLeagueControlQueuePath(config), `${request.id}.json`);
 	await FS(path).safeWrite(JSON.stringify(request, null, 2));
@@ -337,7 +347,7 @@ async function writeControlRequest(
 function requireModelLeagueAccess(this: Chat.PageContext | Chat.CommandContext) {
 	const room = Rooms.get("development");
 	if (!room) throw new Chat.ErrorMessage("No Development room found.");
-	this.checkCan("lock", null, room);
+	this.checkCan("warn", null, room);
 	return room;
 }
 
@@ -560,11 +570,11 @@ export const commands: Chat.ChatCommands = {
 };
 
 export const pages: Chat.PageTable = {
-	modelleague: async function (query, user) {
-		const {config, state} = loadModelLeagueMaterializedState();
+	async modelleague(query, user) {
+		const { config, state } = loadModelLeagueMaterializedState();
 		const room = Rooms.get("development");
 		if (!room) throw new Chat.ErrorMessage("No Development room found.");
-		this.checkCan("lock", null, room);
+		this.checkCan("warn", null, room);
 		this.title = "[Model League]";
 		const queuedRequests = await loadControlRequests(config);
 

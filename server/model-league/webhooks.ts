@@ -10,7 +10,7 @@ export async function postModelLeagueWebhook(
 	target: ModelLeagueWebhookTarget | null,
 	payload: AnyObject
 ) {
-	if (!target) return {delivered: false, error: null as string | null};
+	if (!target) return { delivered: false, error: null as string | null };
 	const headers: Record<string, string> = {
 		"content-type": "application/json",
 		...target.headers,
@@ -32,9 +32,9 @@ export async function postModelLeagueWebhook(
 				error: `Webhook returned ${response.status} ${response.statusText}`.trim(),
 			};
 		}
-		return {delivered: true, error: null as string | null};
+		return { delivered: true, error: null as string | null };
 	} catch (error: any) {
-		return {delivered: false, error: error.message || String(error)};
+		return { delivered: false, error: error.message || String(error) };
 	}
 }
 
@@ -50,12 +50,19 @@ function isCompletionPayload(payload: AnyObject): payload is ModelLeagueTraining
 
 export class ModelLeagueCompletionWebhookServer {
 	private server: http.Server | null = null;
+	private readonly config: ModelLeagueConfig;
+	private readonly onPayload: (payload: ModelLeagueTrainingCompletionPayload) => Promise<void>;
+	private readonly onStatus: (patch: Partial<ModelLeagueWebhookState>) => void;
 
 	constructor(
-		private readonly config: ModelLeagueConfig,
-		private readonly onPayload: (payload: ModelLeagueTrainingCompletionPayload) => Promise<void>,
-		private readonly onStatus: (patch: Partial<ModelLeagueWebhookState>) => void = () => {},
-	) {}
+		config: ModelLeagueConfig,
+		onPayload: (payload: ModelLeagueTrainingCompletionPayload) => Promise<void>,
+		onStatus: (patch: Partial<ModelLeagueWebhookState>) => void = () => {},
+	) {
+		this.config = config;
+		this.onPayload = onPayload;
+		this.onStatus = onStatus;
+	}
 
 	async start() {
 		const webhook = this.config.webhooks.inboundTrainingCompleted;
@@ -85,11 +92,15 @@ export class ModelLeagueCompletionWebhookServer {
 		if (!this.server) return;
 		const current = this.server;
 		this.server = null;
-		await new Promise<void>(resolve => current.close(() => resolve()));
-		this.onStatus({listening: false});
+		await new Promise<void>(resolve => {
+			current.close(() => {
+				resolve();
+			});
+		});
+		this.onStatus({ listening: false });
 	}
 
-	private async handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
+	private handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
 		const webhook = this.config.webhooks.inboundTrainingCompleted;
 		if (!webhook) {
 			response.statusCode = 404;
@@ -102,7 +113,7 @@ export class ModelLeagueCompletionWebhookServer {
 			return;
 		}
 		if (webhook.secret && request.headers["x-model-league-secret"] !== webhook.secret) {
-			this.onStatus({lastError: "Rejected inbound webhook with invalid secret."});
+			this.onStatus({ lastError: "Rejected inbound webhook with invalid secret." });
 			response.statusCode = 403;
 			response.end("forbidden");
 			return;
@@ -113,7 +124,7 @@ export class ModelLeagueCompletionWebhookServer {
 			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 		});
 		request.on("error", error => {
-			this.onStatus({lastError: error.message});
+			this.onStatus({ lastError: error.message });
 			if (!response.headersSent) {
 				response.statusCode = 500;
 				response.end("error");
@@ -141,7 +152,7 @@ export class ModelLeagueCompletionWebhookServer {
 			response.statusCode = 202;
 			response.end("accepted");
 		} catch (error: any) {
-			this.onStatus({lastError: error.message || String(error)});
+			this.onStatus({ lastError: error.message || String(error) });
 			response.statusCode = 500;
 			response.end("error");
 		}

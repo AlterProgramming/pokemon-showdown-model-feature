@@ -1,14 +1,14 @@
 import * as crypto from "crypto";
-import {FS} from "../../lib";
-import {ModelLeagueRunner} from "../../sim/tools/model-league-runner";
+import { FS } from "../../lib";
+import { ModelLeagueRunner } from "../../sim/tools/model-league-runner";
 import {
 	getDefaultModelLeagueConfigPath,
 	loadModelLeagueConfig,
 	resolveModelLeagueConfigPath,
 	writeActiveModelLeagueConfigPath,
 } from "./config";
-import {applyRatingMatch, createRatingEntry, sortRatings} from "./ratings";
-import {postModelLeagueWebhook, ModelLeagueCompletionWebhookServer} from "./webhooks";
+import { applyRatingMatch, createRatingEntry, sortRatings } from "./ratings";
+import { postModelLeagueWebhook, ModelLeagueCompletionWebhookServer } from "./webhooks";
 import {
 	appendModelLeagueEvent,
 	archiveControlRequest,
@@ -30,6 +30,7 @@ import {
 	writeTrainingJobFile,
 } from "./storage";
 import type {
+	ModelLeagueBenchmarkProgress,
 	ModelLeagueCheckpointState,
 	ModelLeagueConfig,
 	ModelLeagueDaemonState,
@@ -42,7 +43,34 @@ import type {
 	ModelLeagueTrainingJob,
 } from "./types";
 
-type LoadedLeague = {configPath: string; config: ModelLeagueConfig; state: ModelLeagueState};
+type LoadedLeague = { configPath: string, config: ModelLeagueConfig, state: ModelLeagueState };
+type MatchSelection = {
+	pool: ModelLeagueSchedulerBucket,
+	rollouts: number,
+	modelA: ModelLeagueCheckpointState,
+	modelB: ModelLeagueCheckpointState,
+	teamA: ModelLeagueTeamState,
+	teamB: ModelLeagueTeamState,
+};
+type MatchSettlementFrontier = {
+	pool: ModelLeagueSchedulerBucket,
+	rollouts: number,
+	modelAId: string,
+	modelAName: string,
+	modelBId: string,
+	modelBName: string,
+	teamAId: string,
+	teamAName: string,
+	teamBId: string,
+	teamBName: string,
+};
+type BenchmarkSettlementFrontier = {
+	benchmarkId: string,
+	challengerModelId: string,
+	challengerTeamId: string,
+	opponentModelId: string,
+	opponentTeamId: string,
+};
 
 export interface ModelLeagueDaemonOptions {
 	configPath?: string;
@@ -63,7 +91,7 @@ export interface ModelLeagueDaemonStatusReport {
 	trainingJobs: number;
 	checkpoints: number;
 	teams: number;
-	benchmarkProgress: {total: number; cleared: number};
+	benchmarkProgress: { total: number, cleared: number };
 	stats: ModelLeagueState["stats"];
 	webhook: ModelLeagueDaemonState["webhook"];
 }
@@ -84,7 +112,7 @@ function recent<T>(items: T[], limit: number) {
 	return items.length > limit ? items.slice(-limit) : items;
 }
 
-function weightedPick<T extends {sampleWeight?: number}>(items: T[]) {
+function weightedPick<T extends { sampleWeight?: number }>(items: T[]) {
 	const total = items.reduce((sum, item) => sum + (item.sampleWeight || 1), 0);
 	if (!total) return null;
 	let roll = Math.random() * total;
@@ -98,7 +126,7 @@ function weightedPick<T extends {sampleWeight?: number}>(items: T[]) {
 function loadLeague(configPath: string): LoadedLeague {
 	const config = loadModelLeagueConfig(configPath);
 	const state = loadModelLeagueState(config, configPath);
-	return {configPath, config, state};
+	return { configPath, config, state };
 }
 
 function activeTeams(state: ModelLeagueState) {
@@ -116,6 +144,61 @@ function eligibleTeams(checkpoint: ModelLeagueCheckpointState, state: ModelLeagu
 
 function pickTeam(checkpoint: ModelLeagueCheckpointState, state: ModelLeagueState) {
 	return weightedPick(eligibleTeams(checkpoint, state));
+}
+
+function captureMatchSettlementFrontier(selection: MatchSelection): MatchSettlementFrontier {
+	return {
+		pool: selection.pool,
+		rollouts: selection.rollouts,
+		modelAId: selection.modelA.id,
+		modelAName: selection.modelA.name,
+		modelBId: selection.modelB.id,
+		modelBName: selection.modelB.name,
+		teamAId: selection.teamA.id,
+		teamAName: selection.teamA.name,
+		teamBId: selection.teamB.id,
+		teamBName: selection.teamB.name,
+	};
+}
+
+function captureBenchmarkSettlementFrontier(
+	progress: ModelLeagueBenchmarkProgress,
+	challenger: ModelLeagueCheckpointState,
+	challengerTeam: ModelLeagueTeamState,
+	opponent: ModelLeagueCheckpointState,
+	opponentTeam: ModelLeagueTeamState,
+): BenchmarkSettlementFrontier {
+	return {
+		benchmarkId: progress.id,
+		challengerModelId: challenger.id,
+		challengerTeamId: challengerTeam.id,
+		opponentModelId: opponent.id,
+		opponentTeamId: opponentTeam.id,
+	};
+}
+
+function requireCheckpointForSettlement(state: ModelLeagueState, checkpointId: string, role: string) {
+	const settledCheckpoint = getCheckpoint(state, checkpointId);
+	if (!settledCheckpoint) {
+		throw new Error(`Model league settlement drift: missing ${role} checkpoint "${checkpointId}".`);
+	}
+	return settledCheckpoint;
+}
+
+function requireTeamForSettlement(state: ModelLeagueState, teamId: string, role: string) {
+	const settledTeam = getTeam(state, teamId);
+	if (!settledTeam) {
+		throw new Error(`Model league settlement drift: missing ${role} team "${teamId}".`);
+	}
+	return settledTeam;
+}
+
+function requireBenchmarkProgressForSettlement(state: ModelLeagueState, benchmarkId: string) {
+	const settledProgress = state.benchmarkProgress.find(candidate => candidate.id === benchmarkId);
+	if (!settledProgress) {
+		throw new Error(`Model league settlement drift: missing benchmark progress "${benchmarkId}".`);
+	}
+	return settledProgress;
 }
 
 function activeCheckpoints(state: ModelLeagueState) {
@@ -172,9 +255,18 @@ function createMatchSummary(
 	};
 }
 
-async function makeTrainingJob(config: ModelLeagueConfig, state: ModelLeagueState, checkpoint: ModelLeagueCheckpointState, requestedBy: string) {
-	const existing = state.trainingJobs.find(job => job.modelCheckpointId === checkpoint.id && (job.status === "pending" || job.status === "registered"));
+async function makeTrainingJob(
+	config: ModelLeagueConfig,
+	state: ModelLeagueState,
+	checkpoint: ModelLeagueCheckpointState,
+	requestedBy: string,
+) {
+	const existing = state.trainingJobs.find(job =>
+		job.modelCheckpointId === checkpoint.id &&
+		(job.status === "pending" || job.status === "registered")
+	);
 	if (existing) return existing;
+	const frontierCheckpointId = checkpoint.id;
 	const jobId = randomId(`modelleague-training-${checkpoint.id}`);
 	const bundleDir = joinPath(config.stateRoot, config.training.bundleDir, jobId);
 	const manifestPath = joinPath(bundleDir, "manifest.json");
@@ -201,30 +293,48 @@ async function makeTrainingJob(config: ModelLeagueConfig, state: ModelLeagueStat
 	await FS(manifestPath).safeWrite(JSON.stringify({
 		version: 1,
 		jobId,
-		checkpointId: checkpoint.id,
+		checkpointId: frontierCheckpointId,
 		parentCheckpointId: job.parentCheckpointId,
 		lineageId: job.lineageId,
 		buffer: checkpoint.trainingBuffer,
 	}, null, 2));
-	upsertTrainingJob(state, job);
-	state.stats.trainingBundles++;
-	checkpoint.lastTrainingJobAt = job.createdAt;
-	checkpoint.trainingBuffer = {matchCount: 0, exampleCount: 0, exampleFiles: [], matchIds: [], lastBundleCreatedAt: job.createdAt};
+	const settledState = state;
+	const settledCheckpoint = requireCheckpointForSettlement(settledState, frontierCheckpointId, "training");
+	upsertTrainingJob(settledState, job);
+	settledState.stats.trainingBundles++;
+	settledCheckpoint.lastTrainingJobAt = job.createdAt;
+	settledCheckpoint.trainingBuffer = {
+		matchCount: 0,
+		exampleCount: 0,
+		exampleFiles: [],
+		matchIds: [],
+		lastBundleCreatedAt: job.createdAt,
+	};
 	await writeTrainingJobFile(config, job);
 	const webhook = await postModelLeagueWebhook(config.webhooks.outboundTrainingRequested, {
 		jobId,
-		modelCheckpointId: checkpoint.id,
+		modelCheckpointId: frontierCheckpointId,
 		bundleDir,
 		manifestPath,
 	});
 	job.outboundWebhookDeliveredAt = webhook.delivered ? now() : null;
 	job.outboundWebhookError = webhook.error;
 	await writeTrainingJobFile(config, job);
-	await appendModelLeagueEvent(config, {type: "training-job-created", jobId, checkpointId: checkpoint.id, requestedBy});
+	await appendModelLeagueEvent(config, {
+		type: "training-job-created",
+		jobId,
+		checkpointId: frontierCheckpointId,
+		requestedBy,
+	});
 	return job;
 }
 
-async function processCompletion(config: ModelLeagueConfig, state: ModelLeagueState, payload: ModelLeagueTrainingCompletionPayload, source: "webhook" | "disk") {
+async function processCompletion(
+	config: ModelLeagueConfig,
+	state: ModelLeagueState,
+	payload: ModelLeagueTrainingCompletionPayload,
+	source: "webhook" | "disk",
+) {
 	if (state.processedCompletedJobIds.includes(payload.jobId)) return;
 	await writeCompletedTrainingPayload(config, payload);
 	const checkpoint = applyTrainingCompletionPayloadToState(state, payload);
@@ -235,7 +345,9 @@ async function processCompletion(config: ModelLeagueConfig, state: ModelLeagueSt
 	}
 	const parent = payload.parentCheckpointId ? getCheckpoint(state, payload.parentCheckpointId) : null;
 	if (parent) {
-		checkpoint.allowedTeamIds = checkpoint.allowedTeamIds || (parent.allowedTeamIds ? [...parent.allowedTeamIds] : null);
+		checkpoint.allowedTeamIds =
+			checkpoint.allowedTeamIds ||
+			(parent.allowedTeamIds ? [...parent.allowedTeamIds] : null);
 		checkpoint.sampleWeight = Math.max(1.5, parent.sampleWeight || 1);
 		parent.sampleWeight = Math.max(0.25, parent.sampleWeight * 0.75);
 	}
@@ -246,10 +358,20 @@ async function processCompletion(config: ModelLeagueConfig, state: ModelLeagueSt
 	state.processedCompletedJobIds.push(payload.jobId);
 	await removeTrainingJobFile(config, payload.jobId);
 	await removeCompletedTrainingPayload(config, payload.jobId);
-	await appendModelLeagueEvent(config, {type: "training-completed", jobId: payload.jobId, source, newModelId: payload.newModelId});
+	await appendModelLeagueEvent(config, {
+		type: "training-completed",
+		jobId: payload.jobId,
+		source,
+		newModelId: payload.newModelId,
+	});
 }
 
-async function processControlRequest(config: ModelLeagueConfig, state: ModelLeagueState, request: any, daemon: ModelLeagueDaemon) {
+async function processControlRequest(
+	config: ModelLeagueConfig,
+	state: ModelLeagueState,
+	request: any,
+	daemon: ModelLeagueDaemon,
+) {
 	if (state.processedControlRequestIds.includes(request.id)) return;
 	if (request.type === "pause") state.daemon.status = "paused";
 	if (request.type === "resume") state.daemon.status = "running";
@@ -257,12 +379,20 @@ async function processControlRequest(config: ModelLeagueConfig, state: ModelLeag
 	if (request.type === "force-snapshot") daemon.requestSnapshot = true;
 	if (request.type === "enqueue-training") {
 		const checkpoint = request.modelCheckpointId ? getCheckpoint(state, request.modelCheckpointId) :
-			[...activeCheckpoints(state)].sort((a, b) => (b.trainingBuffer.matchCount + b.trainingBuffer.exampleCount) - (a.trainingBuffer.matchCount + a.trainingBuffer.exampleCount))[0];
+			[...activeCheckpoints(state)].sort(
+				(a, b) =>
+					(b.trainingBuffer.matchCount + b.trainingBuffer.exampleCount) -
+					(a.trainingBuffer.matchCount + a.trainingBuffer.exampleCount)
+			)[0];
 		if (checkpoint) await makeTrainingJob(config, state, checkpoint, request.requestedBy);
 	}
 	state.processedControlRequestIds.push(request.id);
 	await archiveControlRequest(config, request.id);
-	await appendModelLeagueEvent(config, {type: "control-request-processed", requestId: request.id, requestType: request.type});
+	await appendModelLeagueEvent(config, {
+		type: "control-request-processed",
+		requestId: request.id,
+		requestType: request.type,
+	});
 }
 
 export class ModelLeagueDaemon {
@@ -311,7 +441,7 @@ export class ModelLeagueDaemon {
 				this.save();
 			},
 			patch => {
-				this.state.daemon.webhook = {...this.state.daemon.webhook, ...patch};
+				this.state.daemon.webhook = { ...this.state.daemon.webhook, ...patch };
 				this.save();
 			},
 		);
@@ -326,14 +456,16 @@ export class ModelLeagueDaemon {
 	async start() {
 		if (this.stopPromise) return this.stopPromise;
 		await this.load();
+		const settledState = this.state;
+		const settledDaemon = settledState.daemon;
 		this.running = true;
 		this.stopPromise = new Promise<void>(resolve => {
 			this.stopResolve = resolve;
 		});
-		this.state.daemon.status = this.state.daemon.status === "paused" ? "paused" : "running";
-		this.state.daemon.pid = process.pid;
-		this.state.daemon.startedAt = this.state.daemon.startedAt || now();
-		this.state.daemon.heartbeatAt = now();
+		settledDaemon.status = settledDaemon.status === "paused" ? "paused" : "running";
+		settledDaemon.pid = process.pid;
+		settledDaemon.startedAt = settledDaemon.startedAt || now();
+		settledDaemon.heartbeatAt = now();
 		await writeActiveModelLeagueConfigPath(this.configPath);
 		await this.startWebhook();
 		this.save();
@@ -348,9 +480,11 @@ export class ModelLeagueDaemon {
 		this.timer = null;
 		await this.stopWebhook();
 		if (this.state) {
-			this.state.daemon.status = "idle";
-			this.state.daemon.activeTask = null;
-			this.state.daemon.heartbeatAt = now();
+			const settledState = this.state;
+			const settledDaemon = settledState.daemon;
+			settledDaemon.status = "idle";
+			settledDaemon.activeTask = null;
+			settledDaemon.heartbeatAt = now();
 			this.save();
 		}
 		this.stopResolve?.();
@@ -362,9 +496,11 @@ export class ModelLeagueDaemon {
 		if (this.done) return;
 		try {
 			await this.load();
-			this.state.daemon.heartbeatAt = now();
-			this.state.daemon.lastLoopAt = now();
-			this.state.daemon.loopCount++;
+			const settledState = this.state;
+			const settledDaemon = settledState.daemon;
+			settledDaemon.heartbeatAt = now();
+			settledDaemon.lastLoopAt = now();
+			settledDaemon.loopCount++;
 			await this.processQueues();
 			await this.runScheduledWork();
 			if (this.state.daemon.status !== "paused") {
@@ -372,11 +508,13 @@ export class ModelLeagueDaemon {
 			}
 			if (this.requestSnapshot) {
 				this.requestSnapshot = false;
-				await appendModelLeagueEvent(this.config, {type: "snapshot-forced", at: now()});
+				await appendModelLeagueEvent(this.config, { type: "snapshot-forced", at: now() });
 			}
 			this.save();
 		} catch (error: any) {
-			this.state.daemon.lastError = error.message || String(error);
+			const settledState = this.state;
+			const settledDaemon = settledState.daemon;
+			settledDaemon.lastError = error.message || String(error);
 			this.save();
 		} finally {
 			if (!this.done) this.schedule(this.config.scheduler.loopIntervalMs);
@@ -419,7 +557,7 @@ export class ModelLeagueDaemon {
 		return Date.now() - Date.parse(last.recordedAt) >= this.config.scheduler.benchmarkIntervalMs;
 	}
 
-	private selectMatch() {
+	private selectMatch(): MatchSelection | null {
 		const roll = Math.random();
 		const live = this.config.scheduler.liveMatchmakingWeight;
 		const hist = this.config.scheduler.archivedMatchmakingWeight;
@@ -435,9 +573,16 @@ export class ModelLeagueDaemon {
 		} else if (pool === "historical") {
 			const checkpoints = historicalCheckpoints(this.state);
 			modelA = weightedPick(activeCheckpoints(this.state)) || weightedPick(checkpoints) || undefined;
-			modelB = modelA ? weightedPick((checkpoints.length ? checkpoints : activeCheckpoints(this.state)).filter(candidate => candidate.id !== modelA!.id)) || undefined : undefined;
+			modelB = modelA ?
+				weightedPick(
+					(checkpoints.length ? checkpoints : activeCheckpoints(this.state))
+						.filter(candidate => candidate.id !== modelA!.id)
+				) || undefined :
+				undefined;
 		} else {
-			const checkpoints = activeCheckpoints(this.state).slice().sort((a, b) => (a.matchCount + a.exampleCount) - (b.matchCount + b.exampleCount));
+			const checkpoints = activeCheckpoints(this.state)
+				.slice()
+				.sort((a, b) => (a.matchCount + a.exampleCount) - (b.matchCount + b.exampleCount));
 			modelA = checkpoints[0];
 			modelB = checkpoints.find(candidate => candidate.id !== modelA!.id);
 		}
@@ -445,82 +590,147 @@ export class ModelLeagueDaemon {
 		const teamA = pickTeam(modelA, this.state);
 		const teamB = pickTeam(modelB, this.state);
 		if (!teamA || !teamB) return null;
-		return {pool, rollouts, modelA, modelB, teamA, teamB};
+		return {
+			pool,
+			rollouts,
+			modelA,
+			modelB,
+			teamA,
+			teamB,
+		};
 	}
 
-	private async runMatch(selection: {pool: ModelLeagueSchedulerBucket; rollouts: number; modelA: ModelLeagueCheckpointState; modelB: ModelLeagueCheckpointState; teamA: ModelLeagueTeamState; teamB: ModelLeagueTeamState;}) {
+	private async runMatch(selection: MatchSelection) {
+		const frontier = captureMatchSettlementFrontier(selection);
 		const runner = new ModelLeagueRunner({
 			format: this.config.format,
-			modelA: {id: selection.modelA.id, name: selection.modelA.name, modelID: selection.modelA.modelID, endpoint: selection.modelA.endpoint, modelProfile: selection.modelA.modelProfile, allowVoluntarySwitches: selection.modelA.allowVoluntarySwitches, team: selection.teamA.packedTeam, teamId: selection.teamA.id},
-			modelB: {id: selection.modelB.id, name: selection.modelB.name, modelID: selection.modelB.modelID, endpoint: selection.modelB.endpoint, modelProfile: selection.modelB.modelProfile, allowVoluntarySwitches: selection.modelB.allowVoluntarySwitches, team: selection.teamB.packedTeam, teamId: selection.teamB.id},
+			modelA: {
+				id: selection.modelA.id,
+				name: selection.modelA.name,
+				modelID: selection.modelA.modelID,
+				endpoint: selection.modelA.endpoint,
+				modelProfile: selection.modelA.modelProfile,
+				allowVoluntarySwitches: selection.modelA.allowVoluntarySwitches,
+				team: selection.teamA.packedTeam,
+				teamId: selection.teamA.id,
+			},
+			modelB: {
+				id: selection.modelB.id,
+				name: selection.modelB.name,
+				modelID: selection.modelB.modelID,
+				endpoint: selection.modelB.endpoint,
+				modelProfile: selection.modelB.modelProfile,
+				allowVoluntarySwitches: selection.modelB.allowVoluntarySwitches,
+				team: selection.teamB.packedTeam,
+				teamId: selection.teamB.id,
+			},
 			rollouts: selection.rollouts,
 			sideSwap: this.config.scheduler.sideSwap,
 			captureTrainingExamples: this.config.training.enabled,
 			trainingExampleOutputDir: "",
 		});
 		const result = await runner.runBatch();
-		const score = result.batch.modelAWins > result.batch.modelBWins ? 1 : result.batch.modelAWins < result.batch.modelBWins ? 0 : 0.5;
-		const modelRatings = applyRatingMatch({entries: this.state.modelRatings, idA: selection.modelA.id, nameA: selection.modelA.name, idB: selection.modelB.id, nameB: selection.modelB.name, scoreA: score, now: result.batch.recordedAt, config: this.config});
-		const teamRatings = applyRatingMatch({entries: this.state.teamRatings, idA: selection.teamA.id, nameA: selection.teamA.name, idB: selection.teamB.id, nameB: selection.teamB.name, scoreA: score, now: result.batch.recordedAt, config: this.config});
+		const settledState = this.state;
+		const settledModelA = requireCheckpointForSettlement(settledState, frontier.modelAId, "modelA");
+		const settledModelB = requireCheckpointForSettlement(settledState, frontier.modelBId, "modelB");
+		const settledTeamA = requireTeamForSettlement(settledState, frontier.teamAId, "teamA");
+		const settledTeamB = requireTeamForSettlement(settledState, frontier.teamBId, "teamB");
+		const score = result.batch.modelAWins > result.batch.modelBWins ?
+			1 :
+			result.batch.modelAWins < result.batch.modelBWins ? 0 : 0.5;
+		const modelRatings = applyRatingMatch({
+			entries: settledState.modelRatings,
+			idA: frontier.modelAId,
+			nameA: frontier.modelAName,
+			idB: frontier.modelBId,
+			nameB: frontier.modelBName,
+			scoreA: score,
+			now: result.batch.recordedAt,
+			config: this.config,
+		});
+		const teamRatings = applyRatingMatch({
+			entries: settledState.teamRatings,
+			idA: frontier.teamAId,
+			nameA: frontier.teamAName,
+			idB: frontier.teamBId,
+			nameB: frontier.teamBName,
+			scoreA: score,
+			now: result.batch.recordedAt,
+			config: this.config,
+		});
 		const examplesForARecords = result.batch.battles.flatMap((battle: any) =>
-			battle.trainingExamples.filter((record: any) => record.modelCheckpointId === selection.modelA.id)
+			battle.trainingExamples.filter((record: any) => record.modelCheckpointId === frontier.modelAId)
 		);
 		const examplesForBRecords = result.batch.battles.flatMap((battle: any) =>
-			battle.trainingExamples.filter((record: any) => record.modelCheckpointId === selection.modelB.id)
+			battle.trainingExamples.filter((record: any) => record.modelCheckpointId === frontier.modelBId)
 		);
 		const examplesForA = examplesForARecords.length;
 		const examplesForB = examplesForBRecords.length;
 		const exampleFiles: Record<string, string | undefined> = {};
 		if (examplesForARecords.length) {
-			const outputDirA = getModelLeagueTrainingDir(this.config, joinPath(this.config.training.examplesDir, selection.pool, selection.modelA.id));
+			const outputDirA = getModelLeagueTrainingDir(
+				this.config,
+				joinPath(this.config.training.examplesDir, frontier.pool, frontier.modelAId)
+			);
 			const outputPathA = joinPath(outputDirA, `${result.batch.batchId}.jsonl`);
 			await FS(outputDirA).mkdirp();
-			await FS(outputPathA).safeWrite(examplesForARecords.map((record: any) => JSON.stringify(record)).join("\n") + "\n");
-			exampleFiles[selection.modelA.id] = outputPathA;
+			await FS(outputPathA).safeWrite(
+				examplesForARecords.map((record: any) => JSON.stringify(record)).join("\n") + "\n"
+			);
+			exampleFiles[frontier.modelAId] = outputPathA;
 		}
 		if (examplesForBRecords.length) {
-			const outputDirB = getModelLeagueTrainingDir(this.config, joinPath(this.config.training.examplesDir, selection.pool, selection.modelB.id));
+			const outputDirB = getModelLeagueTrainingDir(
+				this.config,
+				joinPath(this.config.training.examplesDir, frontier.pool, frontier.modelBId)
+			);
 			const outputPathB = joinPath(outputDirB, `${result.batch.batchId}.jsonl`);
 			await FS(outputDirB).mkdirp();
-			await FS(outputPathB).safeWrite(examplesForBRecords.map((record: any) => JSON.stringify(record)).join("\n") + "\n");
-			exampleFiles[selection.modelB.id] = outputPathB;
+			await FS(outputPathB).safeWrite(
+				examplesForBRecords.map((record: any) => JSON.stringify(record)).join("\n") + "\n"
+			);
+			exampleFiles[frontier.modelBId] = outputPathB;
 		}
-		selection.modelA.matchCount++;
-		selection.modelB.matchCount++;
-		selection.teamA.matchCount++;
-		selection.teamB.matchCount++;
-		if (selection.pool === "historical") {
-			selection.modelA.historicalMatchCount++;
-			selection.modelB.historicalMatchCount++;
-			selection.teamA.historicalMatchCount++;
-			selection.teamB.historicalMatchCount++;
-			this.state.stats.historicalMatches++;
+		settledModelA.matchCount++;
+		settledModelB.matchCount++;
+		settledTeamA.matchCount++;
+		settledTeamB.matchCount++;
+		if (frontier.pool === "historical") {
+			settledModelA.historicalMatchCount++;
+			settledModelB.historicalMatchCount++;
+			settledTeamA.historicalMatchCount++;
+			settledTeamB.historicalMatchCount++;
+			settledState.stats.historicalMatches++;
 		} else {
-			selection.modelA.liveMatchCount++;
-			selection.modelB.liveMatchCount++;
-			selection.teamA.liveMatchCount++;
-			selection.teamB.liveMatchCount++;
-			this.state.stats.liveMatches++;
+			settledModelA.liveMatchCount++;
+			settledModelB.liveMatchCount++;
+			settledTeamA.liveMatchCount++;
+			settledTeamB.liveMatchCount++;
+			settledState.stats.liveMatches++;
 		}
-		selection.modelA.trainingBuffer.matchCount++;
-		selection.modelB.trainingBuffer.matchCount++;
-		selection.modelA.trainingBuffer.matchIds.push(result.batch.batchId);
-		selection.modelB.trainingBuffer.matchIds.push(result.batch.batchId);
-		selection.modelA.trainingBuffer.exampleCount += examplesForA;
-		selection.modelB.trainingBuffer.exampleCount += examplesForB;
-		if (exampleFiles[selection.modelA.id]) selection.modelA.trainingBuffer.exampleFiles.push(exampleFiles[selection.modelA.id]!);
-		if (exampleFiles[selection.modelB.id]) selection.modelB.trainingBuffer.exampleFiles.push(exampleFiles[selection.modelB.id]!);
-		selection.modelA.exampleCount += examplesForA;
-		selection.modelB.exampleCount += examplesForB;
-		this.state.stats.decisionExamplesCaptured += examplesForA + examplesForB;
-		sortRatings(this.state.modelRatings);
-		sortRatings(this.state.teamRatings);
+		settledModelA.trainingBuffer.matchCount++;
+		settledModelB.trainingBuffer.matchCount++;
+		settledModelA.trainingBuffer.matchIds.push(result.batch.batchId);
+		settledModelB.trainingBuffer.matchIds.push(result.batch.batchId);
+		settledModelA.trainingBuffer.exampleCount += examplesForA;
+		settledModelB.trainingBuffer.exampleCount += examplesForB;
+		if (exampleFiles[frontier.modelAId]) {
+			settledModelA.trainingBuffer.exampleFiles.push(exampleFiles[frontier.modelAId]!);
+		}
+		if (exampleFiles[frontier.modelBId]) {
+			settledModelB.trainingBuffer.exampleFiles.push(exampleFiles[frontier.modelBId]!);
+		}
+		settledModelA.exampleCount += examplesForA;
+		settledModelB.exampleCount += examplesForB;
+		settledState.stats.decisionExamplesCaptured += examplesForA + examplesForB;
+		sortRatings(settledState.modelRatings);
+		sortRatings(settledState.teamRatings);
 		const summary = createMatchSummary(
-			selection.pool === "historical" ? "historical" : "live",
-			selection.pool,
+			frontier.pool === "historical" ? "historical" : "live",
+			frontier.pool,
 			result.batch,
-			selection.teamA.id,
-			selection.teamB.id,
+			frontier.teamAId,
+			frontier.teamBId,
 			modelRatings.beforeA,
 			modelRatings.afterA,
 			modelRatings.beforeB,
@@ -531,13 +741,22 @@ export class ModelLeagueDaemon {
 			teamRatings.afterB,
 		);
 		summary.exampleFiles = exampleFiles;
-		this.state.recentMatches.push(summary);
-		this.state.recentMatches = recent(this.state.recentMatches, this.config.scheduler.recentMatchLimit);
-		await appendModelLeagueEvent(this.config, {type: "match-completed", bucket: selection.pool, modelAId: selection.modelA.id, modelBId: selection.modelB.id});
+		settledState.recentMatches.push(summary);
+		settledState.recentMatches = recent(
+			settledState.recentMatches,
+			this.config.scheduler.recentMatchLimit,
+		);
+		await appendModelLeagueEvent(this.config, {
+			type: "match-completed",
+			bucket: frontier.pool,
+			modelAId: frontier.modelAId,
+			modelBId: frontier.modelBId,
+		});
 	}
 
 	private async runBenchmark() {
-		const progress = this.state.benchmarkProgress.find(candidate => !candidate.cleared) || this.state.benchmarkProgress[this.state.benchmarkProgress.length - 1];
+		const progress = this.state.benchmarkProgress.find(candidate => !candidate.cleared) ||
+			this.state.benchmarkProgress[this.state.benchmarkProgress.length - 1];
 		if (!progress) return false;
 		const benchmark = this.config.benchmarks.find(candidate => candidate.id === progress.id);
 		if (!benchmark) return false;
@@ -545,49 +764,100 @@ export class ModelLeagueDaemon {
 			.slice()
 			.sort((a, b) => b.elo - a.elo)
 			.map(entry => getCheckpoint(this.state, entry.id))
-			.find(candidate => !!candidate?.active && !candidate.archived) || activeCheckpoints(this.state)[0];
+			.find(candidate => !!candidate?.active && !candidate.archived) ||
+			activeCheckpoints(this.state)[0];
 		if (!challenger) return false;
 		const challengerTeam = pickTeam(challenger, this.state);
 		const opponent = getCheckpoint(this.state, benchmark.opponentModelId);
 		const opponentTeam = getTeam(this.state, benchmark.opponentTeamId);
 		if (!challengerTeam || !opponent || !opponentTeam) return false;
+		const frontier = captureBenchmarkSettlementFrontier(
+			progress,
+			challenger,
+			challengerTeam,
+			opponent,
+			opponentTeam,
+		);
 		const runner = new ModelLeagueRunner({
 			format: this.config.format,
-			modelA: {id: challenger.id, name: challenger.name, modelID: challenger.modelID, endpoint: challenger.endpoint, modelProfile: challenger.modelProfile, allowVoluntarySwitches: challenger.allowVoluntarySwitches, team: challengerTeam.packedTeam, teamId: challengerTeam.id},
-			modelB: {id: opponent.id, name: opponent.name, modelID: opponent.modelID, endpoint: opponent.endpoint, modelProfile: opponent.modelProfile, allowVoluntarySwitches: opponent.allowVoluntarySwitches, team: opponentTeam.packedTeam, teamId: opponentTeam.id},
+			modelA: {
+				id: challenger.id,
+				name: challenger.name,
+				modelID: challenger.modelID,
+				endpoint: challenger.endpoint,
+				modelProfile: challenger.modelProfile,
+				allowVoluntarySwitches: challenger.allowVoluntarySwitches,
+				team: challengerTeam.packedTeam,
+				teamId: challengerTeam.id,
+			},
+			modelB: {
+				id: opponent.id,
+				name: opponent.name,
+				modelID: opponent.modelID,
+				endpoint: opponent.endpoint,
+				modelProfile: opponent.modelProfile,
+				allowVoluntarySwitches: opponent.allowVoluntarySwitches,
+				team: opponentTeam.packedTeam,
+				teamId: opponentTeam.id,
+			},
 			rollouts: benchmark.rollouts || this.config.scheduler.benchmarkRolloutsDefault,
 			sideSwap: this.config.scheduler.sideSwap,
 			captureTrainingExamples: false,
 		});
 		const result = await runner.runBatch();
+		const settledState = this.state;
+		const settledProgress = requireBenchmarkProgressForSettlement(
+			settledState,
+			frontier.benchmarkId,
+		);
+		const settledChallenger = requireCheckpointForSettlement(
+			settledState,
+			frontier.challengerModelId,
+			"challenger",
+		);
+		const settledChallengerTeam = requireTeamForSettlement(
+			settledState,
+			frontier.challengerTeamId,
+			"challenger",
+		);
+		const settledOpponent = requireCheckpointForSettlement(
+			settledState,
+			frontier.opponentModelId,
+			"opponent",
+		);
+		const settledOpponentTeam = requireTeamForSettlement(
+			settledState,
+			frontier.opponentTeamId,
+			"opponent",
+		);
 		const cleared = result.batch.winRateA >= (benchmark.requiredWinRate ?? 0.6);
-		progress.lastRunAt = result.batch.recordedAt;
-		progress.lastChallengerModelId = challenger.id;
-		progress.lastChallengerTeamId = challengerTeam.id;
-		progress.lastWinRate = result.batch.winRateA;
-		progress.lastConfidenceLow = result.batch.confidenceLow;
-		progress.lastConfidenceHigh = result.batch.confidenceHigh;
+		settledProgress.lastRunAt = result.batch.recordedAt;
+		settledProgress.lastChallengerModelId = frontier.challengerModelId;
+		settledProgress.lastChallengerTeamId = frontier.challengerTeamId;
+		settledProgress.lastWinRate = result.batch.winRateA;
+		settledProgress.lastConfidenceLow = result.batch.confidenceLow;
+		settledProgress.lastConfidenceHigh = result.batch.confidenceHigh;
 		if (cleared) {
-			progress.cleared = true;
-			progress.clearedAt = result.batch.recordedAt;
+			settledProgress.cleared = true;
+			settledProgress.clearedAt = result.batch.recordedAt;
 		}
-		challenger.matchCount++;
-		opponent.matchCount++;
-		challengerTeam.matchCount++;
-		opponentTeam.matchCount++;
-		challenger.benchmarkMatchCount++;
-		opponent.benchmarkMatchCount++;
-		challengerTeam.benchmarkMatchCount++;
-		opponentTeam.benchmarkMatchCount++;
-		this.state.stats.benchmarkRuns++;
-		this.state.recentBenchmarkRuns.push({
+		settledChallenger.matchCount++;
+		settledOpponent.matchCount++;
+		settledChallengerTeam.matchCount++;
+		settledOpponentTeam.matchCount++;
+		settledChallenger.benchmarkMatchCount++;
+		settledOpponent.benchmarkMatchCount++;
+		settledChallengerTeam.benchmarkMatchCount++;
+		settledOpponentTeam.benchmarkMatchCount++;
+		settledState.stats.benchmarkRuns++;
+		settledState.recentBenchmarkRuns.push({
 			id: result.batch.batchId,
-			benchmarkId: benchmark.id,
+			benchmarkId: frontier.benchmarkId,
 			recordedAt: result.batch.recordedAt,
-			challengerModelId: challenger.id,
-			challengerTeamId: challengerTeam.id,
-			opponentModelId: opponent.id,
-			opponentTeamId: opponentTeam.id,
+			challengerModelId: frontier.challengerModelId,
+			challengerTeamId: frontier.challengerTeamId,
+			opponentModelId: frontier.opponentModelId,
+			opponentTeamId: frontier.opponentTeamId,
 			rollouts: result.batch.rollouts,
 			winRate: result.batch.winRateA,
 			confidenceLow: result.batch.confidenceLow,
@@ -595,24 +865,42 @@ export class ModelLeagueDaemon {
 			cleared,
 			replayPaths: result.batch.replayPaths,
 		});
-		this.state.recentBenchmarkRuns = recent(this.state.recentBenchmarkRuns, this.config.scheduler.recentMatchLimit);
-		await appendModelLeagueEvent(this.config, {type: "benchmark-completed", benchmarkId: benchmark.id, cleared, winRate: result.batch.winRateA});
+		settledState.recentBenchmarkRuns = recent(
+			settledState.recentBenchmarkRuns,
+			this.config.scheduler.recentMatchLimit,
+		);
+		await appendModelLeagueEvent(this.config, {
+			type: "benchmark-completed",
+			benchmarkId: frontier.benchmarkId,
+			cleared,
+			winRate: result.batch.winRateA,
+		});
 		return true;
 	}
 
 	private async processTrainingEligibility() {
 		const eligible = this.state.checkpoints
 			.filter(checkpoint => checkpoint.active && !checkpoint.archived)
-			.filter(checkpoint => checkpoint.trainingBuffer.matchCount >= this.config.training.minMatches && checkpoint.trainingBuffer.exampleCount >= this.config.training.minExamples)
-			.filter(checkpoint => !checkpoint.lastTrainingJobAt || Date.now() - Date.parse(checkpoint.lastTrainingJobAt) >= this.config.training.cooldownMs)
-			.sort((a, b) => (b.trainingBuffer.matchCount + b.trainingBuffer.exampleCount) - (a.trainingBuffer.matchCount + a.trainingBuffer.exampleCount));
+			.filter(checkpoint =>
+				checkpoint.trainingBuffer.matchCount >= this.config.training.minMatches &&
+				checkpoint.trainingBuffer.exampleCount >= this.config.training.minExamples
+			)
+			.filter(checkpoint =>
+				!checkpoint.lastTrainingJobAt ||
+				Date.now() - Date.parse(checkpoint.lastTrainingJobAt) >= this.config.training.cooldownMs
+			)
+			.sort(
+				(a, b) =>
+					(b.trainingBuffer.matchCount + b.trainingBuffer.exampleCount) -
+					(a.trainingBuffer.matchCount + a.trainingBuffer.exampleCount)
+			);
 		if (!eligible.length) return;
 		await makeTrainingJob(this.config, this.state, eligible[0], "daemon");
 	}
 }
 
 export async function loadModelLeagueDaemonStatus(configPath?: string) {
-	const resolvedConfigPath = resolveModelLeagueConfigPath(configPath, {preferActive: true});
+	const resolvedConfigPath = resolveModelLeagueConfigPath(configPath, { preferActive: true });
 	const config = loadModelLeagueConfig(resolvedConfigPath);
 	await ensureModelLeagueDirectories(config);
 	const state = loadModelLeagueState(config, resolvedConfigPath);
@@ -633,7 +921,10 @@ export async function loadModelLeagueDaemonStatus(configPath?: string) {
 		trainingJobs: state.trainingJobs.length,
 		checkpoints: state.checkpoints.length,
 		teams: state.teams.length,
-		benchmarkProgress: {total: state.benchmarkProgress.length, cleared: state.benchmarkProgress.filter(progress => progress.cleared).length},
+		benchmarkProgress: {
+			total: state.benchmarkProgress.length,
+			cleared: state.benchmarkProgress.filter(progress => progress.cleared).length,
+		},
 		stats: state.stats,
 		webhook: state.daemon.webhook,
 	} satisfies ModelLeagueDaemonStatusReport;

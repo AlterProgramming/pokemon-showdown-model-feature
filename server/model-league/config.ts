@@ -1,6 +1,6 @@
-import {FS} from "../../lib";
-import {parseReplayCaptureMode} from "../../sim/tools/replay-export";
-import {normalizeRLModelProfile, parseBooleanOption} from "../../sim/tools/rl-model-profiles";
+import { FS } from "../../lib";
+import { parseReplayCaptureMode } from "../../sim/tools/replay-export";
+import { normalizeRLModelProfile, parseBooleanOption } from "../../sim/tools/rl-model-profiles";
 import type {
 	ModelLeagueBenchmarkConfig,
 	ModelLeagueConfig,
@@ -210,7 +210,11 @@ function normalizeModels(rawModels: AnyObject[], teams: ModelLeagueTeamConfig[])
 	return models;
 }
 
-function normalizeBenchmarks(rawBenchmarks: AnyObject[], models: ModelLeagueModelConfig[], teams: ModelLeagueTeamConfig[]): ModelLeagueBenchmarkConfig[] {
+function normalizeBenchmarks(
+	rawBenchmarks: AnyObject[],
+	models: ModelLeagueModelConfig[],
+	teams: ModelLeagueTeamConfig[],
+): ModelLeagueBenchmarkConfig[] {
 	const modelIds = new Set(models.map(model => model.id));
 	const teamIds = new Set(teams.map(team => team.id));
 	const seenIds = new Set<string>();
@@ -241,9 +245,9 @@ function normalizeBenchmarks(rawBenchmarks: AnyObject[], models: ModelLeagueMode
 			opponentModelId,
 			opponentTeamId,
 			requiredWinRate: raw.requiredWinRate === undefined ? 0.6 :
-				toPositiveNumber(raw.requiredWinRate, 0.6, `benchmarks[${index}].requiredWinRate`),
+			toPositiveNumber(raw.requiredWinRate, 0.6, `benchmarks[${index}].requiredWinRate`),
 			rollouts: raw.rollouts === undefined ? undefined :
-				toPositiveInteger(raw.rollouts, 1, `benchmarks[${index}].rollouts`),
+			toPositiveInteger(raw.rollouts, 1, `benchmarks[${index}].rollouts`),
 			description: raw.description ? String(raw.description) : undefined,
 		};
 	}).sort((a, b) => a.level - b.level);
@@ -273,7 +277,8 @@ export function loadModelLeagueConfig(configPath = DEFAULT_CONFIG_PATH): ModelLe
 		webhooks: normalizeWebhooks(raw.webhooks || {}),
 	};
 	for (const benchmark of config.benchmarks) {
-		if (benchmark.requiredWinRate <= 0 || benchmark.requiredWinRate > 1) {
+		const requiredWinRate = benchmark.requiredWinRate ?? 0.6;
+		if (requiredWinRate <= 0 || requiredWinRate > 1) {
 			throw new Error(`Benchmark '${benchmark.id}' requiredWinRate must be between 0 and 1.`);
 		}
 	}
@@ -292,7 +297,7 @@ export function readActiveModelLeagueConfigPath() {
 	const raw = FS(ACTIVE_CONFIG_POINTER_PATH).readIfExistsSync();
 	if (!raw) return null;
 	try {
-		const parsed = JSON.parse(raw) as {configPath?: string};
+		const parsed = JSON.parse(raw) as { configPath?: string };
 		const configPath = typeof parsed.configPath === "string" ? parsed.configPath.trim() : "";
 		if (!configPath || !FS(configPath).existsSync()) return null;
 		return configPath;
@@ -301,7 +306,7 @@ export function readActiveModelLeagueConfigPath() {
 	}
 }
 
-export function resolveModelLeagueConfigPath(configPath?: string | null, options: {preferActive?: boolean} = {}) {
+export function resolveModelLeagueConfigPath(configPath?: string | null, options: { preferActive?: boolean } = {}) {
 	if (configPath) return configPath;
 	if (options.preferActive) return readActiveModelLeagueConfigPath() || DEFAULT_CONFIG_PATH;
 	return DEFAULT_CONFIG_PATH;
