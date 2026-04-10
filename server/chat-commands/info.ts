@@ -330,7 +330,8 @@ export const commands: Chat.ChatCommands = {
 					punishDesc += ` for ${expireString}`;
 
 					if (reason) punishDesc += `: ${reason}`;
-					return `<a href="/${curRoom}">${curRoom}</a> (${punishDesc})`;
+					const roomid = curRoom.roomid;
+					return `<a href="/${roomid}">${roomid}</a> (${punishDesc})`;
 				}).join(', ');
 			}
 		}
@@ -413,7 +414,8 @@ export const commands: Chat.ChatCommands = {
 				punishDesc += ` for ${expireString}`;
 
 				if (reason) punishDesc += `: ${reason}`;
-				return `<a href="/${curRoom}">${curRoom}</a> (${punishDesc})`;
+				const roomid = curRoom.roomid;
+				return `<a href="/${roomid}">${roomid}</a> (${punishDesc})`;
 			}).join(', ');
 			atLeastOne = true;
 		}
@@ -455,7 +457,7 @@ export const commands: Chat.ChatCommands = {
 		if (!room.persist) {
 			throw new Chat.ErrorMessage("This command is unavailable in temporary rooms.");
 		}
-		return this.parse(`/join view-punishments-${room}`);
+		return this.parse(`/join view-punishments-${room.roomid}`);
 	},
 	showpunishmentshelp: [`/showpunishments - Shows the current punishments in the room. Requires: % @ # ~`],
 
@@ -1103,10 +1105,10 @@ export const commands: Chat.ChatCommands = {
 			} else if (!defender && targetMethods.includes(method)) {
 				if (foundData.types) {
 					defender = foundData;
-					defName = `${foundData.name} (not counting abilities)`;
+					defName = `${String(foundData.name)} (not counting abilities)`;
 				} else {
-					defender = { types: [foundData.name] };
-					defName = foundData.name;
+					defender = { types: [String(foundData.name)] };
+					defName = String(foundData.name);
 				}
 				searchMethods = sourceMethods;
 			}
@@ -1131,7 +1133,7 @@ export const commands: Chat.ChatCommands = {
 		const hasThousandArrows = source.id === 'thousandarrows' && defender.types.includes('Flying');
 		const additionalInfo = hasThousandArrows ? "<br />However, Thousand Arrows will be 1x effective on the first hit." : "";
 
-		this.sendReplyBox(`${atkName} is ${factor}x effective against ${defName}.${additionalInfo}`);
+		this.sendReplyBox(`${String(atkName)} is ${factor}x effective against ${String(defName)}.${additionalInfo}`);
 	},
 	effectivenesshelp: [
 		`/effectiveness [attack], [defender] - Provides the effectiveness of a move or type on another type or a Pok\u00e9mon.`,
@@ -1751,6 +1753,20 @@ export const commands: Chat.ChatCommands = {
 	},
 	suggestionshelp: [`/suggestions - Links to the place to make suggestions for Pokemon Showdown.`],
 
+	rokuhelp: 'streamhelp',
+	streamhelp(target, room, user) {
+		if (!this.runBroadcast()) return;
+		this.sendReplyBox(
+			`I'm able to help you stream supported content directly from the site and make the playback experience smoother on your Roku setup.<br />` +
+			`I can also help improve mirrored playback performance, adjust browser settings for better viewing, and guide you in using available streaming options so everything works as smoothly as possible.<br />` +
+			`If you already have a local video file, I'm able to help you add it to your Videos library so it appears in Roku Media Player.`
+		);
+	},
+	streamhelphelp: [
+		`/streamhelp - Shows a Roku streaming support message.`,
+		`!streamhelp - Show everyone that information. Requires: + % @ # ~`,
+	],
+
 	bugreport: 'bugs',
 	bugreports: 'bugs',
 	bugs(target, room, user) {
@@ -1947,7 +1963,7 @@ export const commands: Chat.ChatCommands = {
 					rn = rn.replace(/ thread$/gi, '');
 					rn = rn.replace(/Pokemon Showdown/gi, 'PS');
 					rn = rn.split(' ').map((x: string) => x[0].toUpperCase() + x.substr(1)).join(' ');
-					descHtml.push(`&bullet; <a href="${url}">${rn}</a>`);
+					descHtml.push(`&bullet; <a href="${String(url)}">${String(rn)}</a>`);
 				}
 			} else if (format.threads?.length) {
 				descHtml.push(...format.threads);
@@ -1978,7 +1994,7 @@ export const commands: Chat.ChatCommands = {
 				const data = await getFormatResources(subformat.id);
 				if (data) {
 					for (const { resource_name, url } of data.resources) {
-						desc.push(`&bullet; <a href="${url}">${resource_name}</a>`);
+						desc.push(`&bullet; <a href="${String(url)}">${String(resource_name)}</a>`);
 					}
 				}
 				const descHTML = desc.length ? desc.join("<br />") : "&mdash;";
@@ -2871,7 +2887,7 @@ export const commands: Chat.ChatCommands = {
 		}
 		const format = Dex.formats.get(toID(args.format[0]));
 		if (format.effectType !== 'Format') {
-			return this.popupReply(`The format '${format}' does not exist.`);
+			return this.popupReply(`The format '${format.id}' does not exist.`);
 		}
 		delete args.format;
 		const targetUserID = toID(args.user?.[0] || '');
@@ -3064,7 +3080,7 @@ export const commands: Chat.ChatCommands = {
 	randtopics: 'randomtopics',
 	randomtopics(target, room, user) {
 		room = this.requireRoom();
-		return this.parse(`/join view-topics-${room}`);
+		return this.parse(`/join view-topics-${room.roomid}`);
 	},
 };
 
