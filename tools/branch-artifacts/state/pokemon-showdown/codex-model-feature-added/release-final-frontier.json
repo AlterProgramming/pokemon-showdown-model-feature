@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "repo": "pokemon-showdown",
+  "branch": "codex/model-feature-added",
+  "taskId": "release-final-frontier",
+  "owner": "main-thread",
+  "status": "validated-release-clean",
+  "topology": [
+    {
+      "node": "transport/serialization-hygiene",
+      "owner": "Hubble",
+      "files": [
+        "sim/tools/rl-agent.ts"
+      ]
+    },
+    {
+      "node": "daemon/post-runner-settlement",
+      "owner": "Wegener",
+      "files": [
+        "sim/tools/model-league-runner.ts"
+      ]
+    },
+    {
+      "node": "daemon/boundary-contracts",
+      "owner": "Wegener",
+      "files": [
+        "server/model-league/config.ts"
+      ]
+    },
+    {
+      "node": "daemon/idempotent-ledgers",
+      "owner": "Wegener",
+      "files": [
+        "server/model-league/storage.ts"
+      ]
+    },
+    {
+      "node": "typing/rl-projection-shape-drift",
+      "owner": "Planck",
+      "files": [
+        "sim/tools/rl-model-client.ts"
+      ]
+    }
+  ],
+  "seams": [],
+  "openRisks": [
+    "9 release findings remain across 5 files",
+    "awaiting delegated branch validation and commits",
+    "release-stability-lint is clean",
+    "targeted model-league mocha run exceeded local timeout window",
+    "full tsc still fails on unrelated room-battle errors",
+    "temporary duplicate artifact tree under tools/branch-artifacts/state/pokemon-showdown/model-feature-added/ should remain untracked or deleted"
+  ],
+  "validatedCommits": [],
+  "feedback": [
+    {
+      "from": "main-thread",
+      "note": "release gate clean; broader validation blocked by unrelated/global test surfaces",
+      "at": "2026-04-09T00:00:00Z"
+    },
+    {
+      "from": "docs-hygiene",
+      "note": "canonical branch-artifacts path is tools/branch-artifacts/state/pokemon-showdown/codex-model-feature-added/; temporary model-feature-added duplicate should stay untracked or be deleted",
+      "at": "2026-04-10T16:38:07.6646385-05:00"
+    }
+  ],
+  "createdAt": "2026-04-10T01:38:17.979Z",
+  "updatedAt": "2026-04-10T21:38:07.957Z"
+}
