@@ -31,7 +31,8 @@ function readJson<T>(path: string): T | null {
 	try {
 		return JSON.parse(raw) as T;
 	} catch (error: any) {
-		throw new Error(`Failed to parse ${path}: ${error.message}`);
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to parse ${path}: ${errorMessage}`);
 	}
 }
 

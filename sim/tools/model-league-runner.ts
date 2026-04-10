@@ -27,7 +27,7 @@ export type ModelLeagueCompetitorSpec = {
 	metadata?: AnyObject;
 };
 
-type NormalizedCompetitor = ModelLeagueCompetitorSpec & {
+type NormalizedCompetitor = Omit<ModelLeagueCompetitorSpec, "modelProfile"> & {
 	packedTeam: string;
 	modelProfile: RLModelProfileConfig;
 };
@@ -207,7 +207,7 @@ export class ModelLeagueRunner {
 				seed: battleSeed,
 				p1,
 				p2,
-				captureTrainingExamples: this.options.captureTrainingExamples,
+				captureTrainingExamples: !!this.options.captureTrainingExamples,
 			});
 			battles.push(battle);
 			const modelAOutcome = this.scoreBattleForModel(battle, modelA.id);
@@ -254,9 +254,20 @@ export class ModelLeagueRunner {
 	}
 
 	private normalizeCompetitor(competitor: ModelLeagueCompetitorSpec): NormalizedCompetitor {
+		const normalizedModelProfile = makeModelProfileConfig(
+			String(competitor.modelProfile),
+			competitor.allowVoluntarySwitches
+		);
 		return {
-			...competitor,
-			modelProfile: makeModelProfileConfig(String(competitor.modelProfile), competitor.allowVoluntarySwitches),
+			id: competitor.id,
+			name: competitor.name,
+			modelID: competitor.modelID,
+			endpoint: competitor.endpoint,
+			modelProfile: normalizedModelProfile,
+			allowVoluntarySwitches: competitor.allowVoluntarySwitches,
+			team: competitor.team,
+			teamId: competitor.teamId,
+			metadata: competitor.metadata,
 			packedTeam: normalizeTeam(competitor.team),
 		};
 	}
