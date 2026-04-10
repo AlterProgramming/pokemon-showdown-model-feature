@@ -365,8 +365,9 @@ export class RLAgentAI extends BattlePlayer {
 				
 				const modelResponse = await this.queryModel(modelData);
 				const moveSlot = modelResponse?.best_move?.slot;
+				const moveChoiceSlot = typeof moveSlot === "number" || typeof moveSlot === "string" ? moveSlot : null;
 				const switchSlot = extractSwitchSlot(modelResponse);
-				if (modelResponse.type === "move" && moveSlot) {
+				if (modelResponse.type === "move" && moveChoiceSlot !== null) {
 					rlAgentMetrics.actions.modelMoveChoices++;
 					this.captureDecision({
 						recordedAt: new Date().toISOString(),
@@ -374,10 +375,10 @@ export class RLAgentAI extends BattlePlayer {
 						requestKind: "move",
 						modelRequest: this.cloneForCapture(this.modelClient.lastRequest || modelData),
 						modelResponse: this.cloneForCapture(modelResponse),
-						chosenAction: `move ${moveSlot}`,
+						chosenAction: `move ${String(moveChoiceSlot)}`,
 						usedFallback: false,
 					});
-					this.choose(`move ${moveSlot}`);
+					this.choose(`move ${String(moveChoiceSlot)}`);
 				} else if ((modelResponse.type === "switch" || modelResponse.type === "revive") && switchSlot) {
 					if (modelResponse.type === "revive") rlAgentMetrics.actions.modelReviveChoices++;
 					else rlAgentMetrics.actions.modelVoluntarySwitchChoices++;
@@ -464,7 +465,9 @@ export class RLAgentAI extends BattlePlayer {
 		const side = modelData?.side;
 		const sideID = side?.id || this.lastRequestSide;
 		const sideName = side?.name;
-		if (sideID && sideName) return `${sideID} (${sideName})`;
+		const sideIDText = sideID ? String(sideID) : "";
+		const sideNameText = sideName ? String(sideName) : "";
+		if (sideIDText && sideNameText) return `${sideIDText} (${sideNameText})`;
 		if (sideID) return String(sideID);
 		if (sideName) return String(sideName);
 		return "unknown";

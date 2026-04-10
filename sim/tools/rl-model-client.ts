@@ -46,9 +46,9 @@ export class RLModelClient {
 				responseStatus = response.status;
 				responseStatusText = response.statusText;
 				responseBody = await response.text();
-				const parsedResponse = this.parseResponseBody(responseBody, response.ok);
 
 				if (!response.ok) {
+					const parsedResponse = this.parseResponseBody(responseBody, false);
 					if (this.shouldRetry(response.status, parsedResponse, attempt)) {
 						attempt++;
 						this.logRetry(response.status, attempt);
@@ -58,6 +58,7 @@ export class RLModelClient {
 					throw new Error(`Model request failed: ${response.status}`);
 				}
 
+				const parsedResponse = this.parseRequiredResponseBody(responseBody);
 				this.lastRequest = modelData;
 				this.lastResponse = parsedResponse;
 				return parsedResponse;
@@ -69,7 +70,12 @@ export class RLModelClient {
 	}
 
 	private parseResponseBody(responseBody: string | undefined, requireJson: boolean): AnyObject | null {
-		if (!responseBody) return null;
+		if (!responseBody) {
+			if (requireJson) {
+				throw new Error("Model response body was empty.");
+			}
+			return null;
+		}
 		try {
 			return JSON.parse(responseBody);
 		} catch {
@@ -78,6 +84,14 @@ export class RLModelClient {
 			}
 			return null;
 		}
+	}
+
+	private parseRequiredResponseBody(responseBody: string | undefined): AnyObject {
+		const phaseResponse = this.parseResponseBody(responseBody, true);
+		if (!phaseResponse) {
+			throw new Error("Model response body was empty.");
+		}
+		return phaseResponse;
 	}
 
 	private shouldRetry(responseStatus: number, parsedResponse: AnyObject | null, attempt: number): boolean {
