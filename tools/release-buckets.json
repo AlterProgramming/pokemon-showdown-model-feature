@@ -1,0 +1,52 @@
+{
+  "bridge/ledger-settlement-state-machine": {
+    "owner": "Hubble",
+    "priority": "high",
+    "nextAction": "settle browser ledger by bridgeRequestId"
+  },
+  "bridge/snapshot-reconstruction-boundary": {
+    "owner": "Hubble",
+    "priority": "high",
+    "nextAction": "normalize raw request snapshots at the boundary"
+  },
+  "bridge/action-contract-normalization": {
+    "owner": "Hubble",
+    "priority": "medium",
+    "nextAction": "normalize action contracts once at the adapter edge"
+  },
+  "daemon/post-runner-settlement": {
+    "owner": "Wegener",
+    "priority": "high",
+    "nextAction": "re-read daemon settlement targets by id after await"
+  },
+  "daemon/operational-truth": {
+    "owner": "Wegener",
+    "priority": "medium",
+    "nextAction": "keep daemon state writes on live re-read state"
+  },
+  "typing/raw-request-union-boundary": {
+    "owner": "Planck",
+    "priority": "high",
+    "nextAction": "narrow raw request unions before RL projection"
+  },
+  "typing/perspective-side-projection": {
+    "owner": "Planck",
+    "priority": "medium",
+    "nextAction": "convert SideID to RLRequestSide at the adapter boundary"
+  },
+  "typing/duplicate-normalization-frontiers": {
+    "owner": "Planck",
+    "priority": "medium",
+    "nextAction": "keep move and switch normalization in one frontier"
+  },
+  "typing/rl-projection-shape-drift": {
+    "owner": "Planck",
+    "priority": "medium",
+    "nextAction": "keep projected RL shapes smaller than raw simulator shapes"
+  },
+  "transport/serialization-hygiene": {
+    "owner": "Hubble",
+    "priority": "low",
+    "nextAction": "serialize debug payloads before interpolation"
+  }
+}

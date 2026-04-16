@@ -1,6 +1,10 @@
 /config/*
 !/config/formats.ts
+!/config/model-league.example.json
 /logs/**/*
+/benchmark_runs/**/*
+/databases/model-league/**/*
+/databases/model-league-test/**/*
 /test/modlogs
 /test/replays/*.html
 /node_modules
@@ -71,3 +75,13 @@ local_settings.py
 pip-log.txt
 # redis dumps
 *.rdb
+
+# local RL debugging / benchmark scratch files
+runner-*.log
+model-vs-model-*.log
+state_vector.json
+model_data.json
+legalMoves.json
+legalSwitches.json
+logs/audio-reactions/
+logs/codex-agent-timing/

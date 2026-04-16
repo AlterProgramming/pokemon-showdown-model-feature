@@ -15,13 +15,14 @@ export class RandomPlayerAI extends BattlePlayer {
 	protected readonly move: number;
 	protected readonly mega: number;
 	protected readonly prng: PRNG;
-
+	
 	constructor(
 		playerStream: ObjectReadWriteStream<string>,
 		options: { move?: number, mega?: number, seed?: PRNG | PRNGSeed | null } = {},
 		debug = false
 	) {
 		super(playerStream, debug);
+		
 		this.move = options.move || 1.0;
 		this.mega = options.mega || 0;
 		this.prng = PRNG.get(options.seed);
@@ -34,6 +35,15 @@ export class RandomPlayerAI extends BattlePlayer {
 		throw error;
 	}
 
+	override receiveLine(line: string) {
+		if (this.debug) console.log(line);
+		if (!line.startsWith('|')) return;
+		const separator = line.indexOf('|', 1);
+		const cmd = separator >= 0 ? line.slice(1, separator) : line.slice(1);
+		const rest = separator >= 0 ? line.slice(separator + 1) : '';
+		if (cmd === 'request') return this.receiveRequest(JSON.parse(rest));
+		if (cmd === 'error') return this.receiveError(new Error(rest));
+	}
 	override receiveRequest(request: ChoiceRequest) {
 		if (request.wait) {
 			// wait request
@@ -186,6 +196,7 @@ export class RandomPlayerAI extends BattlePlayer {
 						` dynamax='${canDynamax}', terastallize=${canTerastallize})`);
 				}
 			});
+			// console.log(choices.join(`, `));
 			this.choose(choices.join(`, `));
 		}
 	}

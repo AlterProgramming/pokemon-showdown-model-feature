@@ -11,10 +11,17 @@
 
 import { BattleStream, getPlayerStreams, Teams } from '..';
 import { RandomPlayerAI } from '../tools/random-player-ai';
+import { RLAgentAI } from '../tools/rl-agent';
+import {parseBooleanOption, resolveRLModelProfileConfig} from '../tools/rl-model-profiles';
 
 /*********************************************************************
  * Run AI
  *********************************************************************/
+
+const rlProfile = resolveRLModelProfileConfig(
+	process.env.RL_MODEL_PROFILE,
+	parseBooleanOption(process.env.RL_ALLOW_VOLUNTARY_SWITCHES),
+);
 
 const streams = getPlayerStreams(new BattleStream());
 
@@ -31,10 +38,14 @@ const p2spec = {
 };
 
 const p1 = new RandomPlayerAI(streams.p1);
-const p2 = new RandomPlayerAI(streams.p2);
+const p2 = new RLAgentAI(streams.p2, {
+	modelProfile: rlProfile.profile,
+	allowVoluntarySwitches: rlProfile.allowVoluntarySwitches,
+});
 
 console.log("p1 is " + p1.constructor.name);
 console.log("p2 is " + p2.constructor.name);
+console.log("rl profile is " + rlProfile.profile);
 
 void p1.start();
 void p2.start();

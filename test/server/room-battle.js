@@ -3,11 +3,35 @@
 const assert = require('assert').strict;
 
 const { makeUser } = require('../users-utils');
+const { Teams } = require('../../dist/sim/teams');
+
+function waitUntil(check, timeoutMs = 1000, intervalMs = 10) {
+	return new Promise((resolve, reject) => {
+		const start = Date.now();
+		const tick = () => {
+			try {
+				if (check()) return resolve();
+			} catch (error) {
+				return reject(error);
+			}
+			if (Date.now() - start >= timeoutMs) {
+				return reject(new Error('Timed out waiting for condition.'));
+			}
+			setTimeout(tick, intervalMs);
+		};
+		tick();
+	});
+}
 
 describe('Simulator abstraction layer features', () => {
 	describe('Battle', () => {
 		let p1, p2, room;
+		let originalFetch;
 		afterEach(() => {
+			if (originalFetch !== undefined) {
+				global.fetch = originalFetch;
+				originalFetch = undefined;
+			}
 			if (p1) {
 				p1.disconnectAll();
 				p1.destroy();
@@ -33,6 +57,140 @@ describe('Simulator abstraction layer features', () => {
 			p1.resetName();
 			for (const player of room.battle.players) {
 				assert.equal(player, room.battle.playerTable[toID(player.name)]);
+			}
+		});
+
+		it('should feed automated model opponents only their side-filtered battle state', async () => {
+			originalFetch = global.fetch;
+			const modelRequests = [];
+			global.fetch = async (url, options) => {
+				modelRequests.push({
+					url,
+					body: JSON.parse(options.body),
+				});
+				return new global.Response(JSON.stringify({
+					type: 'move',
+					best_move: { slot: 1 },
+				}), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			};
+
+			const bulkyTeam = Teams.pack([
+				{
+					name: 'Chansey',
+					species: 'Chansey',
+					item: 'Leftovers',
+					ability: 'Natural Cure',
+					moves: ['Soft-Boiled', 'Seismic Toss'],
+					nature: 'Bold',
+					evs: { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 },
+				},
+				{
+					name: 'Skarmory',
+					species: 'Skarmory',
+					item: 'Leftovers',
+					ability: 'Sturdy',
+					moves: ['Protect', 'Roost'],
+					nature: 'Impish',
+					evs: { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 },
+				},
+			]);
+			p1 = makeUser('Human');
+			room = Rooms.createBattle({
+				format: 'gen9customgame@@@!Team Preview',
+				players: [
+					{ user: p1, team: bulkyTeam },
+					{
+						user: null,
+						name: 'Model Bot',
+						avatar: '169',
+						team: bulkyTeam,
+						automation: {
+							type: 'rl-model',
+							endpoint: 'http://model.invalid/predict',
+							modelID: 'model-test',
+							modelProfile: 'joint-policy',
+						},
+					},
+				],
+			});
+			assert(room.battle);
+			assert.equal(room.title, 'Human vs. Model Bot');
+			assert.equal(room.battle.p2.name, 'Model Bot');
+			assert.equal(room.battle.p2.isAutomated, true);
+
+			await waitUntil(() => modelRequests.length >= 1);
+			const firstRequest = modelRequests[0].body;
+			assert.equal(firstRequest.perspective_player, 'p2');
+			assert.equal(firstRequest.side.name, 'Model Bot');
+
+			assert.deepEqual(firstRequest.battle_state.p1.slots.slice(1).filter(Boolean), []);
+			const opponentMons = Object.values(firstRequest.battle_state.mons)
+				.filter(mon => mon.player === 'p1');
+			assert.equal(opponentMons.length, 1);
+			assert.equal(opponentMons[0].uid, firstRequest.battle_state.p1.active_uid);
+
+			room.battle.choose(p1, 'move 1');
+			await waitUntil(() => modelRequests.length >= 2);
+		});
+
+		it('should score model victories as losses for the human side', () => {
+			originalFetch = global.fetch;
+			global.fetch = async () => new global.Response(JSON.stringify({
+				type: 'move',
+				best_move: { slot: 1 },
+			}), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' },
+			});
+
+			const originalLogChallenges = Config.logchallenges;
+			Config.logchallenges = true;
+			try {
+				const bulkyTeam = Teams.pack([
+					{
+						name: 'Chansey',
+						species: 'Chansey',
+						item: 'Leftovers',
+						ability: 'Natural Cure',
+						moves: ['Soft-Boiled', 'Seismic Toss'],
+						nature: 'Bold',
+						evs: { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 },
+					},
+				]);
+				p1 = makeUser('Human');
+				room = Rooms.createBattle({
+					format: 'gen9customgame@@@!Team Preview',
+					players: [
+						{ user: p1, team: bulkyTeam },
+						{
+							user: null,
+							name: 'Model Bot',
+							avatar: '169',
+							team: bulkyTeam,
+							automation: {
+								type: 'rl-model',
+								endpoint: 'http://model.invalid/predict',
+								modelID: 'model-test',
+								modelProfile: 'joint-policy',
+							},
+						},
+					],
+				});
+				assert(room.battle);
+
+				let loggedScore = null;
+				room.battle.logBattle = score => {
+					loggedScore = score;
+					return Promise.resolve();
+				};
+
+				room.battle.end('Model Bot');
+				assert.equal(loggedScore, 0);
+			} finally {
+				Config.logchallenges = originalLogChallenges;
 			}
 		});
 	});

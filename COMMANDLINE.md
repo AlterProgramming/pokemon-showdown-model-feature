@@ -11,6 +11,10 @@ Install Node.js, clone this repository and run `./build` from inside it. (Window
 
 Every time you update the code here (such as with `git pull`), run `./build` again. (If you get errors, try running `./build --force`.)
 
+For Windows-specific test verification notes, see [TEST_RUNBOOK.md](./TEST_RUNBOOK.md).
+
+For the Intel Mac handoff path, including the sister-repo container flow, portable benchmark entrypoints, and local config setup, see [INTEL_MAC_HANDOFF.md](./INTEL_MAC_HANDOFF.md).
+
 Afterwards, you can use any of the following commands:
 
 
@@ -60,6 +64,23 @@ Note: Commands that ask for a team want the team in [packed team format](./sim/T
 `./pokemon-showdown export-team`
 
 - Reads a team in any format from stdin, writes the exported (human-readable) team to stdout
+
+`./pokemon-showdown model-league [--config PATH] <start|pause|resume|force-benchmark|force-snapshot|enqueue-training|status> [CHECKPOINT-ID]`
+
+- Manages the file-backed model league daemon and control queue
+  (Defaults to `config/model-league.json`)
+  (Start from the tracked template `config/model-league.example.json` and copy it to local ignored `config/model-league.json`)
+  (The corresponding admin page is `/j view-modelleague` and requires Development-room `lock` permission)
+
+`./pokemon-showdown browser-model-bridge [--host HOST] [--port PORT] [--model-endpoint URL] [--model-id ID] [--debug-log PATH]`
+
+- Normalizes official-browser battle requests and forwards them to a local model server
+  (Defaults to `127.0.0.1:5051`)
+  (Defaults to forwarding to `http://127.0.0.1:5000/predict`)
+  (Defaults to writing debug snapshots to `logs/browser-model-bridge-debug.log`)
+  (Restart the bridge after server edits and re-save the userscript after script edits)
+
+Portable runner entrypoints for benchmark use live in the built JS files under `dist/sim/examples/` and are documented in [INTEL_MAC_HANDOFF.md](./INTEL_MAC_HANDOFF.md).
 
 `./pokemon-showdown help`
 

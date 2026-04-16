@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "repo": "pokemon-showdown",
+  "branch": "codex/model-feature-added",
+  "taskId": "branch-artifacts-tool-slice",
+  "owner": "branch-artifacts",
+  "status": "active",
+  "topology": [
+    {
+      "node": "tools/branch-artifacts/branch-artifacts.mjs",
+      "role": "artifact-cli"
+    },
+    {
+      "node": "server/model-league/daemon.ts",
+      "role": "consumer-boundary"
+    },
+    {
+      "node": "sim/tools/protocol-state-tracker.ts",
+      "role": "consumer-boundary"
+    }
+  ],
+  "seams": [
+    {
+      "from": "task prompt",
+      "to": "artifact json",
+      "contract": "compact branch-local state stays reloadable"
+    },
+    {
+      "from": "artifact json",
+      "to": "later agent",
+      "contract": "later agent can load topology, seams, owner, risks, validated commits, and feedback"
+    }
+  ],
+  "openRisks": [
+    "subagent hooks not wired yet",
+    "commit validation trail not yet populated"
+  ],
+  "validatedCommits": [],
+  "feedback": [
+    {
+      "from": "validation",
+      "note": "init/load round-trip succeeded with file-backed JSON inputs",
+      "at": "2026-04-09T19:22:20.2889364-05:00"
+    }
+  ],
+  "createdAt": "2026-04-10T00:22:15.806Z",
+  "updatedAt": "2026-04-10T00:22:20.516Z"
+}
