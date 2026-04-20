@@ -49,6 +49,8 @@ Documentation quick links
 * [Bot FAQ][8] - An FAQ compiled by Kaiepi regarding making Pokemon Showdown bots - mainly chatbots and battle bots.
 * [INTEL_MAC_HANDOFF.md][13] - Fresh-machine handoff notes for the RL/model-serving workflow on an Intel Mac.
 * [TEST_RUNBOOK.md][12] - Windows-specific test setup, narrow-file mocha commands, and common compatibility caveats.
+* Upstream drift check - `npm run upstream:drift -- --fetch` to see whether Smogon has new commits since your last fetch.
+* Upstream sync - `npm run upstream:sync` to fetch `upstream/master` and merge it into the current branch.
 
   [4]: ./PROTOCOL.md
   [5]: ./sim/SIM-PROTOCOL.md
@@ -69,6 +71,29 @@ You can also visit the [Pokémon Showdown forums][9] for discussion and help.
   [9]: https://www.smogon.com/forums/forums/pok%C3%A9mon-showdown.209/
 
 If you'd like to contribute to programming and don't know where to start, feel free to check out [Ideas for New Developers][10].
+
+Upstream drift check
+------------------------------------------------------------------------
+
+If you want a quick read on whether the fork is behind Smogon, add the upstream remote once:
+
+```bash
+git remote add upstream https://github.com/smogon/pokemon-showdown.git
+```
+
+Then run:
+
+```bash
+npm run upstream:drift -- --fetch
+```
+
+If you already fetched recently, omit `--fetch` and the script will compare the local branch against your cached upstream ref.
+
+To pull the upstream branch into the current checkout in one step, run:
+
+```bash
+npm run upstream:sync
+```
 
   [10]: https://github.com/smogon/pokemon-showdown/issues/2444
 

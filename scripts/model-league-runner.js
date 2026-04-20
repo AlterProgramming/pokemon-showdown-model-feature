@@ -31,6 +31,7 @@ const SERVICE_WAIT_INTERVAL_MS = Number(process.env.LEAGUE_SERVICE_WAIT_INTERVAL
 const ALL_MODELS = [
   {id: 'word_policy_v1', endpoint: 'local://default', transport: 'local'},
   {id: 'entity_action_bc_v1_20260408_0428', endpoint: 'http://127.0.0.1:5001/predict', transport: 'http'},
+  {id: 'entity_action_v2_20260409_1811', endpoint: 'http://127.0.0.1:5002/predict', transport: 'http'},
   {id: 'model5', endpoint: 'http://127.0.0.1:5000/predict', transport: 'http'},
   {id: 'model4', endpoint: 'http://127.0.0.1:5000/predict', transport: 'http'},
   {id: 'model2', endpoint: 'http://127.0.0.1:5000/predict', transport: 'http'},
@@ -128,8 +129,16 @@ function makeConfigEntry(model) {
 function collectServiceHealth(targetPath) {
   const collector = path.join(REPORTING_REPO, 'scripts', 'collect_model_service_health.py');
   const latest = path.join(REPORTING_REPO, 'docs', 'model_service_health_latest.json');
+  const args = [collector, '--generated-at', generatedAt()];
+  const seen = new Set();
+  for (const model of MODELS) {
+    const url = healthURLForModel(model);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    args.push('--service', `${model.id}=${url}`);
+  }
   try {
-    execFileSync(PYTHON, [collector, '--generated-at', generatedAt()], {
+    execFileSync(PYTHON, args, {
       cwd: REPORTING_REPO,
       stdio: 'inherit',
     });
