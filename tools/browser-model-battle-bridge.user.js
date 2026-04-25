@@ -5,6 +5,8 @@
 // @description  Forward your active Pokemon Showdown battle request and battle-log deltas to a local bridge that normalizes them before replaying the chosen move in the official browser tab.
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://pokemonshowdown.com/*
+// @match        http://localhost:8000/*
+// @match        http://127.0.0.1:8000/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
@@ -913,6 +915,7 @@
 			lastStatus: 'idle',
 			lastStatusPhase: 'idle',
 			ui: null,
+			dotNode: null,
 			statusNode: null,
 			contextNode: null,
 			buttonNode: null,
@@ -967,12 +970,39 @@
 			return 'other';
 		}
 
+		function phaseColor(phase) {
+			const map = {
+				idle: '#475569',
+				enabled: '#34d399',
+				paused: '#94a3b8',
+				waiting: '#fbbf24',
+				dispatching: '#60a5fa',
+				'bridge-pending': '#818cf8',
+				'bridge-unknown': '#f97316',
+				'bridge-error': '#f87171',
+				'submit-error': '#f87171',
+				'stale-in-flight': '#fb923c',
+				'awaiting-acceptance': '#22d3ee',
+				retrying: '#fb923c',
+				confirmed: '#4ade80',
+				armed: '#e879f9',
+				discarded: '#64748b',
+				handled: '#64748b',
+				other: '#94a3b8',
+			};
+			return map[phase] || '#94a3b8';
+		}
+
 		function setStatus(text) {
 			const phase = classifyOverlayStatus(text);
 			if (state.lastStatus === text || state.lastStatusPhase === phase) return;
 			state.lastStatus = text;
 			state.lastStatusPhase = phase;
 			if (state.statusNode) state.statusNode.textContent = text;
+			if (state.dotNode) {
+				state.dotNode.style.background = phaseColor(phase);
+				state.dotNode.setAttribute('data-phase', phase);
+			}
 		}
 
 		function setContext(text) {
@@ -1078,100 +1108,173 @@
 
 		function ensureUi() {
 			if (state.ui || !env.document?.body) return;
+
+			// Inject panel styles + PS page-trim rules (Chrome/Safari compatible via :has())
+			if (!env.document.getElementById('__psbmb-style')) {
+				const styleEl = env.document.createElement('style');
+				styleEl.id = '__psbmb-style';
+				styleEl.textContent = [
+					'html body .__psbmb-panel{',
+					'  color:#e2e8f0;',
+					'  font:11px/1.45 "JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,"Courier New",monospace;',
+					'  border:1px solid rgba(56,189,248,0.22);',
+					'  border-radius:10px;',
+					'  overflow:hidden;',
+					'}',
+					'html body .__psbmb-header{',
+					'  display:flex;align-items:center;gap:6px;',
+					'  padding:9px 10px 7px;',
+					'  border-bottom:1px solid rgba(255,255,255,0.07);',
+					'  cursor:default;',
+					'}',
+					'html body .__psbmb-dot{',
+					'  width:8px;height:8px;border-radius:50%;',
+					'  flex-shrink:0;transition:background 0.2s ease;',
+					'}',
+					'html body .__psbmb-dot[data-phase="dispatching"],',
+					'html body .__psbmb-dot[data-phase="bridge-pending"]{',
+					'  animation:__psbmb-pulse 1.1s ease-in-out infinite;',
+					'}',
+					'@keyframes __psbmb-pulse{0%,100%{opacity:1}50%{opacity:0.3}}',
+					'html body .__psbmb-title{',
+					'  font-weight:700;font-size:10px;letter-spacing:0.04em;',
+					'  text-transform:uppercase;color:#64748b;',
+					'  flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
+					'}',
+					'html body .__psbmb-toggle{',
+					'  background:none;border:none;color:#475569;cursor:pointer;',
+					'  padding:0 2px;font-size:15px;line-height:1;flex-shrink:0;',
+					'  transition:color 0.15s;',
+					'}',
+					'html body .__psbmb-toggle:hover{color:#94a3b8;}',
+					'html body .__psbmb-body{padding:8px 10px 10px;}',
+					'html body .__psbmb-meta{',
+					'  font-size:10px;color:#475569;margin-bottom:4px;',
+					'  word-break:break-all;line-height:1.4;',
+					'}',
+					'html body .__psbmb-status{',
+					'  font-size:11px;font-weight:600;color:#94a3b8;',
+					'  margin-bottom:8px;margin-top:2px;min-height:16px;',
+					'}',
+					'html body .__psbmb-btn{',
+					'  cursor:pointer;padding:5px 10px;',
+					'  border:1px solid rgba(255,255,255,0.1);border-radius:7px;',
+					'  font:inherit;font-weight:700;font-size:10px;letter-spacing:0.03em;',
+					'  display:block;width:100%;margin-bottom:5px;',
+					'  transition:opacity 0.15s,transform 0.1s;',
+					'}',
+					'html body .__psbmb-btn:last-child{margin-bottom:0;}',
+					'html body .__psbmb-btn:hover{opacity:0.82;}',
+					'html body .__psbmb-btn:active{transform:scale(0.98);}',
+					'html body .__psbmb-btn-primary{background:#1d4ed8;color:#fff;border-color:#3b82f6;}',
+					'html body .__psbmb-btn-secondary{background:#0f766e;color:#fff;border-color:#14b8a6;}',
+					'html body .__psbmb-btn-tertiary{background:#581c87;color:#fff;border-color:#7c3aed;}',
+					/* PS page-trim rules — gated on .mainmenuwrapper so they only fire on PS pages */
+					'html:has(.mainmenuwrapper) .topbar .userbar button[name="login"],',
+					'html:has(.mainmenuwrapper) .topbar .userbar button[name="register"]{display:none!important;}',
+					'html:has(.mainmenuwrapper) .mainmenu button[value="ladder"],',
+					'html:has(.mainmenuwrapper) .mainmenu a[href$="/ladder"]{display:none!important;}',
+					'html:has(.mainmenuwrapper) .mainmenu button[value="battles"]{display:none!important;}',
+					'html:has(.mainmenuwrapper) .mainmenu button[name="finduser"]{display:none!important;}',
+					'html:has(.mainmenuwrapper) .rightmenu .newsentry,',
+					'html:has(.mainmenuwrapper) .rightmenu .readmore{display:none!important;}',
+					'html:has(.mainmenuwrapper) .mainmenufooter{display:none!important;}',
+					'html:has(.mainmenuwrapper) .roomcounters button[value="battles"]{display:none!important;}',
+					'html:has(.mainmenuwrapper) a[href*="replay.pokemonshowdown.com"],',
+					'html:has(.mainmenuwrapper) button[name="openReplay"]{display:none!important;}',
+				].join('\n');
+				(env.document.head || env.document.documentElement).appendChild(styleEl);
+			}
+
+			// Root — position/z-index/shadow kept inline so they always win specificity
 			const root = env.document.createElement('div');
+			root.className = '__psbmb-panel';
 			root.style.cssText = [
 				'position:fixed',
 				'right:12px',
 				'bottom:12px',
 				'z-index:2147483647',
-				'background:rgba(12,16,24,0.92)',
-				'color:#f3f4f6',
-				'font:12px/1.4 system-ui, -apple-system, Segoe UI, sans-serif',
-				'padding:12px',
-				'border:1px solid rgba(255,255,255,0.14)',
-				'border-radius:10px',
-				'box-shadow:0 8px 32px rgba(0,0,0,0.35)',
-				'min-width:240px',
+				'background:rgba(8,12,20,0.93)',
+				'box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04) inset',
+				'min-width:256px',
+				'max-width:320px',
 			].join(';');
 
-			const title = env.document.createElement('div');
-			title.textContent = `PS browser-model-bridge v${BRIDGE_VERSION}`;
-			title.style.cssText = 'font-weight:700;margin-bottom:6px;';
+			// Header
+			const header = env.document.createElement('div');
+			header.className = '__psbmb-header';
 
-			const build = env.document.createElement('div');
-			build.textContent = `build ${SCRIPT_BUILD}`;
-			build.style.cssText = 'color:#cbd5e1;margin-bottom:6px;';
+			const dot = env.document.createElement('span');
+			dot.className = '__psbmb-dot';
+			const initPhase = classifyOverlayStatus(state.lastStatus);
+			dot.style.background = phaseColor(initPhase);
+			dot.setAttribute('data-phase', initPhase);
 
-			const endpoint = env.document.createElement('div');
-			endpoint.textContent = CONFIG.endpoint;
-			endpoint.style.cssText = 'word-break:break-all;color:#cbd5e1;margin-bottom:6px;';
+			const titleEl = env.document.createElement('span');
+			titleEl.className = '__psbmb-title';
+			titleEl.textContent = `bridge v${BRIDGE_VERSION}`;
+
+			const toggleBtn = env.document.createElement('button');
+			toggleBtn.className = '__psbmb-toggle';
+			toggleBtn.type = 'button';
+			toggleBtn.textContent = '−'; // minus sign
+			toggleBtn.title = 'Collapse panel';
+
+			header.append(dot, titleEl, toggleBtn);
+
+			// Body
+			const body = env.document.createElement('div');
+			body.className = '__psbmb-body';
+
+			const meta = env.document.createElement('div');
+			meta.className = '__psbmb-meta';
+			meta.textContent = `build ${SCRIPT_BUILD} · ${CONFIG.endpoint}`;
 
 			const context = env.document.createElement('div');
+			context.className = '__psbmb-meta';
 			context.textContent = 'room: waiting';
-			context.style.cssText = 'margin-bottom:6px;color:#d1d5db;';
 
 			const status = env.document.createElement('div');
+			status.className = '__psbmb-status';
 			status.textContent = state.lastStatus;
-			status.style.cssText = 'margin-bottom:8px;color:#93c5fd;';
 
 			const button = env.document.createElement('button');
 			button.type = 'button';
+			button.className = '__psbmb-btn __psbmb-btn-primary';
 			button.textContent = state.enabled ? 'Pause model control' : 'Resume model control';
-			button.style.cssText = [
-				'cursor:pointer',
-				'padding:6px 10px',
-				'border:0',
-				'border-radius:8px',
-				'background:#2563eb',
-				'color:white',
-				'font-weight:600',
-				'display:block',
-				'width:100%',
-				'margin-bottom:6px',
-			].join(';');
 			button.addEventListener('click', () => setEnabled(!state.enabled));
 
 			const printButton = env.document.createElement('button');
 			printButton.type = 'button';
+			printButton.className = '__psbmb-btn __psbmb-btn-secondary';
 			printButton.textContent = state.printNextBattleState ? 'Cancel battle-state print' : 'Print next state';
-			printButton.style.cssText = [
-				'cursor:pointer',
-				'padding:6px 10px',
-				'border:0',
-				'border-radius:8px',
-				'background:#0f766e',
-				'color:white',
-				'font-weight:600',
-				'display:block',
-				'width:100%',
-			].join(';');
 			printButton.addEventListener('click', () => setPrintNextBattleState(!state.printNextBattleState));
 
 			const successLogButton = env.document.createElement('button');
 			successLogButton.type = 'button';
+			successLogButton.className = '__psbmb-btn __psbmb-btn-tertiary';
 			successLogButton.textContent = state.logNextSuccessfulPredict ?
 				'Cancel next success log' :
 				'Log next successful predict';
-			successLogButton.style.cssText = [
-				'cursor:pointer',
-				'padding:6px 10px',
-				'border:0',
-				'border-radius:8px',
-				'background:#7c3aed',
-				'color:white',
-				'font-weight:600',
-				'display:block',
-				'width:100%',
-				'margin-top:6px',
-			].join(';');
 			successLogButton.addEventListener('click', () => {
 				setLogNextSuccessfulPredict(!state.logNextSuccessfulPredict);
 			});
 
-			root.append(title, build, endpoint, context, status, button, printButton, successLogButton);
+			body.append(meta, context, status, button, printButton, successLogButton);
+			root.append(header, body);
 			env.document.body.appendChild(root);
 
+			// Collapse toggle
+			let collapsed = false;
+			toggleBtn.addEventListener('click', () => {
+				collapsed = !collapsed;
+				body.style.display = collapsed ? 'none' : '';
+				toggleBtn.textContent = collapsed ? '+' : '−';
+				toggleBtn.title = collapsed ? 'Expand panel' : 'Collapse panel';
+			});
+
 			state.ui = root;
+			state.dotNode = dot;
 			state.statusNode = status;
 			state.contextNode = context;
 			state.buttonNode = button;
