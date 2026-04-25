@@ -280,25 +280,25 @@ export class RLAgentAI extends BattlePlayer {
 
 	private getObservedOpponentTeam(): Array<{species: string}> {
 		const oppSide = this.tracker.getSnapshot()?.opponent;
-		if (!oppSide) return [];
-
 		const team: Array<{species: string}> = [];
 
-		// Active pokemon
-		if (oppSide.active?.[0]?.species) {
-			team.push({species: oppSide.active[0].species});
-		}
+		if (oppSide) {
+			// Active pokemon
+			if (oppSide.active?.[0]?.species) {
+				team.push({species: oppSide.active[0].species});
+			}
 
-		// Bench pokemon
-		if (oppSide.pokemon) {
-			for (let i = 1; i < oppSide.pokemon.length; i++) {
-				if (oppSide.pokemon[i]?.species) {
-					team.push({species: oppSide.pokemon[i].species});
+			// Bench pokemon
+			if (oppSide.pokemon) {
+				for (let i = 1; i < oppSide.pokemon.length; i++) {
+					if (oppSide.pokemon[i]?.species) {
+						team.push({species: oppSide.pokemon[i].species});
+					}
 				}
 			}
 		}
 
-		// Pad to exactly 6 slots
+		// Always pad to exactly 6 slots (whether oppSide existed or not)
 		while (team.length < 6) {
 			team.push({species: ""});
 		}
