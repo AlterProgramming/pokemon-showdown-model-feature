@@ -278,6 +278,34 @@ export class RLAgentAI extends BattlePlayer {
 		throw error;
 	}
 
+	private getObservedOpponentTeam(): Array<{species: string}> {
+		const oppSide = this.tracker.getSnapshot()?.opponent;
+		if (!oppSide) return [];
+
+		const team: Array<{species: string}> = [];
+
+		// Active pokemon
+		if (oppSide.active?.[0]?.species) {
+			team.push({species: oppSide.active[0].species});
+		}
+
+		// Bench pokemon
+		if (oppSide.pokemon) {
+			for (let i = 1; i < oppSide.pokemon.length; i++) {
+				if (oppSide.pokemon[i]?.species) {
+					team.push({species: oppSide.pokemon[i].species});
+				}
+			}
+		}
+
+		// Pad to exactly 6 slots
+		while (team.length < 6) {
+			team.push({species: ""});
+		}
+
+		return team.slice(0, 6);
+	}
+
 	override async receiveRequest(request: ChoiceRequest) {
 		this.tracker.applyRequest(request);
 		this.lastRequestSide = request.side.id;
@@ -314,6 +342,7 @@ export class RLAgentAI extends BattlePlayer {
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
 					...(stateVector ? {state_vector: stateVector} : {}),
+					observed_opponent_team: this.getObservedOpponentTeam(),
 					battle_state: snapshot,
 					perspective_player: perspective,
 					legal_moves: [],
@@ -418,6 +447,7 @@ export class RLAgentAI extends BattlePlayer {
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
 					...(stateVector ? {state_vector: stateVector} : {}),
+					observed_opponent_team: this.getObservedOpponentTeam(),
 					battle_state: snapshot,
 					perspective_player: perspective,
 					legal_moves: possibleMoves,
@@ -430,7 +460,7 @@ export class RLAgentAI extends BattlePlayer {
 					auxiliary_mode: this.auxiliaryMode,
 					...(this.useCompactWordPolicyPayload ? {} : {side: request.side}),
 				};
-				
+
 				const modelResponse = await this.queryModel(modelData);
 				const moveSlot = modelResponse?.best_move?.slot;
 				const moveChoiceSlot = typeof moveSlot === "number" || typeof moveSlot === "string" ? moveSlot : null;
