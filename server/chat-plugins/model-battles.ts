@@ -1,6 +1,14 @@
 import { Utils } from '../../lib';
 import { TeamValidatorAsync } from '../team-validator-async';
 import type { AutomatedBattlePlayerOptions, RoomBattlePlayerOptions } from '../room-battle';
+import {
+	HUMAN_LOCAL_ID,
+	loadHumanLeagueContext,
+	pickHumanOpponent,
+	recordHumanMatch,
+	saveHumanMatchReplay,
+	type HumanLeagueContext,
+} from '../model-league/human-matches';
 
 interface ModelBattleCatalogEntry {
 	id?: string;
@@ -288,7 +296,85 @@ async function createRepeatedModelBattle(
 	return room;
 }
 
+// Active human-league battles, keyed by room id. onBattleEnd uses this to
+// route the outcome back to the human-matches state.
+interface HumanLeagueMatchContext {
+	modelId: string;
+	modelName: string;
+	modelEndpoint: string | null;
+	humanDisplayName: string;
+	leagueContext: HumanLeagueContext;
+}
+const humanLeagueMatches: Map<string, HumanLeagueMatchContext> = new Map();
+
+function modelLeagueEntryAsCatalog(model: {
+	id: string; name: string; modelID?: string; endpoint?: string;
+	modelProfile?: AutomatedBattlePlayerOptions['modelProfile']; allowVoluntarySwitches?: boolean;
+}): ResolvedModelBattleCatalogEntry {
+	return {
+		id: toID(model.id),
+		name: model.name,
+		description: '',
+		modelID: model.modelID,
+		endpoint: model.endpoint,
+		modelProfile: model.modelProfile,
+		allowVoluntarySwitches: model.allowVoluntarySwitches,
+		formats: [toID('gen9randombattle')],
+		teams: Object.create(null),
+		botName: model.name,
+		avatar: DEFAULT_MODEL_AVATAR,
+	};
+}
+
+export async function createHumanLeagueBattle(connection: Connection, user: User) {
+	if (!user.named) {
+		connection.popup(`You must choose a username before entering the league.`);
+		return null;
+	}
+	let leagueContext: HumanLeagueContext;
+	try {
+		leagueContext = loadHumanLeagueContext();
+	} catch (err: any) {
+		connection.popup(`Could not load model-league config: ${err?.message || err}`);
+		return null;
+	}
+	const { config, state } = leagueContext;
+	const opponent = await pickHumanOpponent(state.humanRating.elo, config, state);
+	if (!opponent) {
+		connection.popup(
+			`No model opponents are reachable right now. Start the Flask model server (flask_api_multi.py) and try again.`
+		);
+		return null;
+	}
+	const formatid = toID('gen9randombattle');
+	const entry = modelLeagueEntryAsCatalog(opponent);
+	const room = await createModelBattle(connection, user, entry, formatid);
+	if (!room) return null;
+	humanLeagueMatches.set(room.roomid, {
+		modelId: opponent.id,
+		modelName: opponent.name,
+		modelEndpoint: opponent.endpoint ?? null,
+		humanDisplayName: user.name,
+		leagueContext,
+	});
+	room.add(
+		`|raw|<div class="broadcast-green"><strong>League match</strong>: ` +
+		`${Utils.escapeHTML(user.name)} (ELO ${Math.round(state.humanRating.elo)}) ` +
+		`vs <strong>${Utils.escapeHTML(opponent.name)}</strong>.</div>`
+	).update();
+	return room;
+}
+
 export const commands: Chat.ChatCommands = {
+	findmatch: 'leaguebattle',
+	async leaguebattle(target, room, user, connection) {
+		if (!connection) throw new Chat.ErrorMessage(`You need a connection to start a league match.`);
+		await createHumanLeagueBattle(connection, user);
+	},
+	leaguebattlehelp: [
+		`/leaguebattle - Enter the model league rotation: matched against an active model near your ELO in gen9randombattle.`,
+		`/findmatch - Alias for /leaguebattle.`,
+	],
 	playmodel: 'modelbattle',
 	modelbattle: {
 		''(target) {
@@ -419,12 +505,68 @@ export const pages: Chat.PageTable = {
 };
 
 export const handlers: Chat.Handlers = {
-	onBattleEnd(battle) {
+	onBattleEnd(battle, winner) {
 		const automatedPlayer = battle.players.find(player => player.isAutomated && player.automation?.type === 'rl-model');
 		if (!automatedPlayer) return;
 		battle.room.add(
 			`|raw|<div class="broadcast-blue"><strong>Replay this battle with the same teams?</strong><br />` +
 			`<button class="button notifying" name="send" value="/j view-modelbattlerematch-${battle.roomid}">Choose a model</button></div>`
 		).update();
+
+		// If this was a human-league match, record the result.
+		const leagueMatch = humanLeagueMatches.get(battle.roomid);
+		if (!leagueMatch) return;
+		humanLeagueMatches.delete(battle.roomid);
+
+		const humanPlayer = battle.players.find(player => !player.isAutomated);
+		if (!humanPlayer) return;
+		const humanId = toID(humanPlayer.name);
+		const modelPlayerId = toID(automatedPlayer.name);
+		let outcome: 'human' | 'model' | 'tie';
+		if (!winner) outcome = 'tie';
+		else if (winner === humanId) outcome = 'human';
+		else if (winner === modelPlayerId) outcome = 'model';
+		else outcome = 'tie';
+
+		try {
+			const record = recordHumanMatch({
+				context: leagueMatch.leagueContext,
+				roomId: battle.roomid,
+				modelId: leagueMatch.modelId,
+				modelName: leagueMatch.modelName,
+				modelEndpoint: leagueMatch.modelEndpoint,
+				winner: outcome,
+				humanDisplayName: leagueMatch.humanDisplayName,
+				turns: battle.turn ?? null,
+			});
+			try {
+				saveHumanMatchReplay({
+					config: leagueMatch.leagueContext.config,
+					roomId: battle.roomid,
+					record,
+					battleLog: (battle.room.log?.log || []).slice(),
+				});
+			} catch (replayErr: any) {
+				battle.room.add(
+					`|raw|<div class="message-error">(replay save failed: ${Utils.escapeHTML(replayErr?.message || String(replayErr))}; ELO already recorded)</div>`
+				).update();
+			}
+			const delta = Math.round(record.humanEloAfter - record.humanEloBefore);
+			const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
+			battle.room.add(
+				`|raw|<div class="broadcast-green"><strong>League result</strong>: ` +
+				`${Utils.escapeHTML(leagueMatch.humanDisplayName)} ${outcome === 'human' ? 'won' : outcome === 'tie' ? 'tied' : 'lost'} ` +
+				`vs ${Utils.escapeHTML(leagueMatch.modelName)}. ` +
+				`ELO ${Math.round(record.humanEloBefore)} → <strong>${Math.round(record.humanEloAfter)}</strong> (${deltaStr}).</div>`
+			).update();
+		} catch (err: any) {
+			battle.room.add(
+				`|raw|<div class="message-error">Failed to record league match: ${Utils.escapeHTML(err?.message || String(err))}</div>`
+			).update();
+		}
 	},
 };
+
+// Silence linter: HUMAN_LOCAL_ID re-exported for any future consumers wanting
+// to filter by the stable human identity.
+export { HUMAN_LOCAL_ID };

@@ -15,6 +15,18 @@ import {
 	type ReplayCaptureMode,
 } from "./replay-export";
 
+export type RLGameRecord = {
+	game_id: string;
+	model_id: string;
+	outcome: 1 | -1;
+	perspective_player: "p1" | "p2";
+	decisions: Array<{
+		turn: number;
+		state_json: any;
+		action_token: string;
+	}>;
+};
+
 export type ModelLeagueCompetitorSpec = {
 	id: string;
 	name: string;
@@ -64,6 +76,7 @@ export type ModelLeagueBattleResult = {
 	p1: NormalizedCompetitor;
 	p2: NormalizedCompetitor;
 	trainingExamples: RLAgentDecisionRecord[];
+	gameRecords: RLGameRecord[];
 };
 
 export type ModelLeagueBatchResult = {
@@ -82,6 +95,7 @@ export type ModelLeagueBatchResult = {
 	confidenceHigh: number;
 	replayPaths: string[];
 	battles: ModelLeagueBattleResult[];
+	gameRecords: RLGameRecord[];
 };
 
 export type ModelLeagueRunnerOutput = {
@@ -147,6 +161,41 @@ async function appendDecisionRecords(outputDir: string, battleId: string, record
 	await FS(filePath).append(content);
 }
 
+function buildGameRecords(
+	battleId: string,
+	winner: "p1" | "p2" | "tie" | "unknown",
+	p1Records: RLAgentDecisionRecord[],
+	p2Records: RLAgentDecisionRecord[],
+	p1: NormalizedCompetitor,
+	p2: NormalizedCompetitor,
+): RLGameRecord[] {
+	if (winner === "tie" || winner === "unknown") return [];
+	const records: RLGameRecord[] = [];
+	const sides: Array<{perspective: "p1" | "p2"; modelRecords: RLAgentDecisionRecord[]; competitor: NormalizedCompetitor}> = [
+		{perspective: "p1", modelRecords: p1Records, competitor: p1},
+		{perspective: "p2", modelRecords: p2Records, competitor: p2},
+	];
+	for (const {perspective, modelRecords, competitor} of sides) {
+		const outcome: 1 | -1 = winner === perspective ? 1 : -1;
+		const decisions = modelRecords
+			.filter(r => r.state_json != null && r.action_token != null)
+			.map(r => ({
+				turn: (r.state_json as any)?.turn_index ?? 0,
+				state_json: r.state_json,
+				action_token: r.action_token as string,
+			}));
+		if (!decisions.length) continue;
+		records.push({
+			game_id: battleId,
+			model_id: competitor.modelID,
+			outcome,
+			perspective_player: perspective,
+			decisions,
+		});
+	}
+	return records;
+}
+
 export class ModelLeagueRunner {
 	private readonly options: Required<Pick<ModelLeagueRunnerOptions, "format" | "rollouts">> & ModelLeagueRunnerOptions;
 	private readonly prng: PRNG;
@@ -191,6 +240,7 @@ export class ModelLeagueRunner {
 		let modelBWins = 0;
 		let ties = 0;
 		const replayPaths: string[] = [];
+		const allGameRecords: RLGameRecord[] = [];
 
 		if (this.options.replayGrid) {
 			this.updateReplayDashboard();
@@ -210,6 +260,7 @@ export class ModelLeagueRunner {
 				captureTrainingExamples: !!this.options.captureTrainingExamples,
 			});
 			battles.push(battle);
+			for (const gr of battle.gameRecords) allGameRecords.push(gr);
 			const modelAOutcome = this.scoreBattleForModel(battle, modelA.id);
 			if (modelAOutcome === 1) modelAWins++;
 			else if (modelAOutcome === 0) modelBWins++;
@@ -249,6 +300,7 @@ export class ModelLeagueRunner {
 			confidenceHigh: confidence.high,
 			replayPaths,
 			battles,
+			gameRecords: allGameRecords,
 		};
 		return batch;
 	}
@@ -368,10 +420,11 @@ export class ModelLeagueRunner {
 				`>player p2 ${JSON.stringify(p2spec)}`
 			);
 			await battleLoop;
+			const resolvedWinner = createBattleResultOutcome(winner, options.p1.name, options.p2.name);
 			return {
 				battleId: options.battleId,
 				seed: options.seed,
-				winner: createBattleResultOutcome(winner, options.p1.name, options.p2.name),
+				winner: resolvedWinner,
 				turns: turnCount,
 				switches,
 				forcedDrags,
@@ -379,6 +432,7 @@ export class ModelLeagueRunner {
 				p1: options.p1,
 				p2: options.p2,
 				trainingExamples: [...p1Records, ...p2Records],
+				gameRecords: buildGameRecords(options.battleId, resolvedWinner, p1Records, p2Records, options.p1, options.p2),
 			};
 		})();
 
@@ -406,7 +460,7 @@ export class ModelLeagueRunner {
 			if (this.options.captureTrainingExamples) {
 				return result;
 			}
-			return {...result, trainingExamples: []};
+			return {...result, trainingExamples: [], gameRecords: result.gameRecords};
 		} finally {
 			if (timeoutHandle) clearTimeout(timeoutHandle);
 			closeBattleStream();

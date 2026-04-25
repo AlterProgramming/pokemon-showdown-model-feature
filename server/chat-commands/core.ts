@@ -1457,6 +1457,16 @@ export const commands: Chat.ChatCommands = {
 
 	async search(target, room, user, connection) {
 		if (target) {
+			// Local model-league fork: redirect gen9randombattle searches into
+			// the human-vs-model league rotation instead of the stock ladder.
+			// This bypasses the laddermodchat rank gate and the normal
+			// matchmaker entirely.
+			if (connection && toID(target) === 'gen9randombattle') {
+				// eslint-disable-next-line @typescript-eslint/no-require-imports
+				const { createHumanLeagueBattle } = require('../chat-plugins/model-battles');
+				await createHumanLeagueBattle(connection, user);
+				return;
+			}
 			if (Config.laddermodchat && !Users.globalAuth.atLeast(user, Config.laddermodchat)) {
 				const groupName = Config.groups[Config.laddermodchat].name || Config.laddermodchat;
 				this.popupReply(this.tr`This server requires you to be rank ${groupName} or higher to search for a battle.`);

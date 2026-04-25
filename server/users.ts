@@ -1649,6 +1649,12 @@ function socketConnect(
 	const user = new User(connection);
 	connection.user = user;
 	void Punishments.checkIp(user, connection);
+	// Local-fork auto-login: when Config.autoLoginName is set, rename the
+	// connection's freshly-created Guest user to that name immediately. Safe
+	// only because this fork runs with `--no-security` / `noguestsecurity`.
+	if (Config.autoLoginName) {
+		user.forceRename(String(Config.autoLoginName), true, false);
+	}
 	// Generate 1024-bit challenge string.
 	require('crypto').randomBytes(128, (err: Error | null, buffer: Buffer) => {
 		if (err) {

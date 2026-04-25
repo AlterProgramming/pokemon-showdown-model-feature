@@ -1,4 +1,7 @@
 import * as crypto from "crypto";
+import * as fs from "fs";
+import * as nodePath from "path";
+import { Teams } from "../../sim";
 import { FS } from "../../lib";
 import { ModelLeagueRunner } from "../../sim/tools/model-league-runner";
 import {
@@ -142,8 +145,30 @@ function eligibleTeams(checkpoint: ModelLeagueCheckpointState, state: ModelLeagu
 	return pool;
 }
 
+const RL_TRAINING_TARGET_MODEL_ID = "entity_action_bc_v1_20260408_0428";
+
+function writeRLExamples(trainingConfig: ModelLeagueConfig['training'], gameRecords: AnyObject[]) {
+	if (!trainingConfig?.enabled) return;
+	if (!gameRecords?.length) return;
+	const filtered = gameRecords.filter((r) => r.model_id === RL_TRAINING_TARGET_MODEL_ID);
+	if (!filtered.length) return;
+	const examplesDir = nodePath.resolve(trainingConfig.examplesDir || "training/examples");
+	fs.mkdirSync(examplesDir, { recursive: true });
+	const fileName = `rl_examples_${Date.now()}.jsonl`;
+	const filePath = nodePath.join(examplesDir, fileName);
+	const content = filtered.map((r) => JSON.stringify(r)).join("\n") + "\n";
+	fs.appendFileSync(filePath, content, "utf8");
+	console.log(`[rl] wrote ${filtered.length} game record(s) to ${filePath}`);
+}
+
 function pickTeam(checkpoint: ModelLeagueCheckpointState, state: ModelLeagueState) {
-	return weightedPick(eligibleTeams(checkpoint, state));
+	const team = weightedPick(eligibleTeams(checkpoint, state));
+	if (!team) return team;
+	if (team.random) {
+		const packed = Teams.pack(Teams.generate("gen9randombattle")) || "";
+		return { ...team, packedTeam: packed };
+	}
+	return team;
 }
 
 function captureMatchSettlementFrontier(selection: MatchSelection): MatchSettlementFrontier {
@@ -303,13 +328,6 @@ async function makeTrainingJob(
 	upsertTrainingJob(settledState, job);
 	settledState.stats.trainingBundles++;
 	settledCheckpoint.lastTrainingJobAt = job.createdAt;
-	settledCheckpoint.trainingBuffer = {
-		matchCount: 0,
-		exampleCount: 0,
-		exampleFiles: [],
-		matchIds: [],
-		lastBundleCreatedAt: job.createdAt,
-	};
 	await writeTrainingJobFile(config, job);
 	const webhook = await postModelLeagueWebhook(config.webhooks.outboundTrainingRequested, {
 		jobId,
@@ -342,6 +360,16 @@ async function processCompletion(
 	if (job) {
 		job.status = "completed";
 		job.completionPayload = payload;
+		const trainedCheckpoint = getCheckpoint(state, job.modelCheckpointId);
+		if (trainedCheckpoint) {
+			trainedCheckpoint.trainingBuffer = {
+				matchCount: 0,
+				exampleCount: 0,
+				exampleFiles: [],
+				matchIds: [],
+				lastBundleCreatedAt: job.createdAt,
+			};
+		}
 	}
 	const parent = payload.parentCheckpointId ? getCheckpoint(state, payload.parentCheckpointId) : null;
 	if (parent) {
@@ -752,6 +780,7 @@ export class ModelLeagueDaemon {
 			modelAId: frontier.modelAId,
 			modelBId: frontier.modelBId,
 		});
+		writeRLExamples(this.config.training, result.batch.gameRecords || []);
 	}
 
 	private async runBenchmark() {

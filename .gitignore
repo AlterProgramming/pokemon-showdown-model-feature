@@ -85,3 +85,9 @@ legalMoves.json
 legalSwitches.json
 logs/audio-reactions/
 logs/codex-agent-timing/
+
+# RL training examples (generated during battle sim, stored in GCS)
+training/examples/
+training/bundles/
+training/pending/
+training/processed/

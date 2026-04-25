@@ -139,12 +139,14 @@ function normalizeTeams(rawTeams: AnyObject[]): ModelLeagueTeamConfig[] {
 		}
 		const id = String(raw.id || "").trim();
 		if (!id) throw new Error(`teams[${index}].id is required.`);
+		const isRandom = toBoolean(raw.random, false);
 		const packedTeam = String(raw.packedTeam || "").trim();
-		if (!packedTeam) throw new Error(`teams[${index}].packedTeam is required.`);
+		if (!isRandom && !packedTeam) throw new Error(`teams[${index}].packedTeam is required.`);
 		return {
 			id,
 			name: String(raw.name || id),
 			packedTeam,
+			random: isRandom,
 			active: toBoolean(raw.active, true),
 			archived: toBoolean(raw.archived, false),
 			sampleWeight: toPositiveNumber(raw.sampleWeight, 1, `teams[${index}].sampleWeight`),

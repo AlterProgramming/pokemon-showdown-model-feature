@@ -45,6 +45,7 @@ export interface ModelLeagueTeamConfig {
 	id: string;
 	name: string;
 	packedTeam: string;
+	random?: boolean;
 	active?: boolean;
 	archived?: boolean;
 	sampleWeight?: number;

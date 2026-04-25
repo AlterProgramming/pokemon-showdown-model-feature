@@ -17,7 +17,7 @@ New sections will be added to the bottom of the specified column.
 The column value will be ignored for repeat sections.
 */
 
-export const Formats: import('../sim/dex-formats').FormatList = [
+const _RawFormats: import('../sim/dex-formats').FormatList = [
 
 	// S/V Singles
 	///////////////////////////////////////////////////////////////////
@@ -5678,3 +5678,26 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Desync Clause Mod', 'Max Team Size = 24', 'Max Move Count = 24', 'Max Level = 9999', 'Default Level = 100'],
 	},
 ];
+
+// Local deployment: restrict UI-visible formats to what we actually use.
+// Formats not in the allowlist remain programmatically available (needed for
+// the sim, the model league, and direct /challenge format strings) — they are
+// just hidden from search, challenge, and tournament dropdowns in the client.
+const _ALLOWED_UI_FORMAT_IDS = new Set([
+	'gen9randombattle',
+	'gen9customgame',
+]);
+
+const _toFormatID = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+export const Formats: import('../sim/dex-formats').FormatList = _RawFormats.map(entry => {
+	// Section headers have no `name`, pass through unchanged.
+	if (!('name' in entry) || !entry.name) return entry;
+	const id = _toFormatID(entry.name);
+	if (_ALLOWED_UI_FORMAT_IDS.has(id)) {
+		// Force visible even if the raw entry had searchShow/challengeShow false
+		// (e.g. Custom Game ships with searchShow: false by default in PS).
+		return { ...entry, searchShow: true, challengeShow: true };
+	}
+	return { ...entry, searchShow: false, challengeShow: false, tournamentShow: false };
+});

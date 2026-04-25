@@ -11,6 +11,7 @@ import { BattlePlayer } from "../battle-stream";
 import type { ChoiceRequest } from "../side";
 import type { PRNGSeed } from "../prng";
 import { ProtocolStateTracker } from "./protocol-state-tracker";
+import { TurnEventV1Emitter } from "./turn-event-v1-emitter";
 import {parseBooleanOption, resolveRLModelProfileConfig, type RLModelProfile} from "./rl-model-profiles";
 import { RLModelClient } from "./rl-model-client";
 import {ensureLocalWordPolicyHandler} from "./word-policy-local";
@@ -42,6 +43,8 @@ export type RLAgentDecisionRecord = {
 	opponentModelId?: string;
 	opponentTeamId?: string;
 	result?: "win" | "loss" | "tie" | "timeout" | "error";
+	state_json?: any;
+	action_token?: string;
 };
 
 type TimingMetric = {
@@ -201,6 +204,9 @@ export class RLAgentAI extends BattlePlayer {
 	private readonly modelClient: RLModelClient;
 	private readonly onDecision: ((record: RLAgentDecisionRecord) => void) | undefined;
 	private tracker = new ProtocolStateTracker();
+	private turnEventEmitter = new TurnEventV1Emitter();
+	private readonly battleID: string = `rl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	private readonly auxiliaryMode: string = (process.env.AUXILIARY_MODE || "none").toLowerCase();
 	private lastRequestSide: string | undefined;
 	constructor(
 		playerStream: ObjectReadWriteStream<string>,
@@ -247,6 +253,7 @@ export class RLAgentAI extends BattlePlayer {
 		for (const line of chunk.split('\n')) {
 			if (!line.startsWith('|')) continue;
 			this.tracker.applyProtocolLine(line);
+			this.turnEventEmitter.applyProtocolLine(line);
 			if (this.debug) console.log(line);
 			const separator = line.indexOf('|', 1);
 			const cmd = separator >= 0 ? line.slice(1, separator) : line.slice(1);
@@ -312,6 +319,9 @@ export class RLAgentAI extends BattlePlayer {
 					legal_moves: [],
 					legal_switches: legalSwitches,
 					legal_revives: legalRevives,
+					battle_id: this.battleID,
+					last_turn_events: this.turnEventEmitter.getLastTurnEvents(),
+					auxiliary_mode: this.auxiliaryMode,
 					...(this.useCompactWordPolicyPayload ? {} : {
 						forceSwitch: request.forceSwitch,
 						reviving: hasReviveRequest,
@@ -332,6 +342,8 @@ export class RLAgentAI extends BattlePlayer {
 						modelResponse: this.cloneForCapture(action),
 						chosenAction: `switch ${switchSlot}`,
 						usedFallback: false,
+						state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+						action_token: action?.action_token ?? undefined,
 					}));
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
@@ -346,6 +358,8 @@ export class RLAgentAI extends BattlePlayer {
 							modelResponse: this.cloneForCapture(action),
 							chosenAction: `switch ${fallbackSlot}`,
 							usedFallback: true,
+							state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+							action_token: action?.action_token ?? undefined,
 						}));
 						this.chooseSwitchLikeAction(fallbackSlot);
 					} else {
@@ -358,6 +372,8 @@ export class RLAgentAI extends BattlePlayer {
 							modelResponse: this.cloneForCapture(action),
 							chosenAction: "pass",
 							usedFallback: true,
+							state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+							action_token: action?.action_token ?? undefined,
 						}));
 						this.choose("pass");
 					}
@@ -409,6 +425,9 @@ export class RLAgentAI extends BattlePlayer {
 					active: this.useCompactWordPolicyPayload
 						? [{trapped: !!active?.trapped, maybeTrapped: !!active?.maybeTrapped}]
 						: request.active,
+					battle_id: this.battleID,
+					last_turn_events: this.turnEventEmitter.getLastTurnEvents(),
+					auxiliary_mode: this.auxiliaryMode,
 					...(this.useCompactWordPolicyPayload ? {} : {side: request.side}),
 				};
 				
@@ -426,6 +445,8 @@ export class RLAgentAI extends BattlePlayer {
 						modelResponse: this.cloneForCapture(modelResponse),
 						chosenAction: `move ${String(moveChoiceSlot)}`,
 						usedFallback: false,
+						state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+						action_token: modelResponse?.action_token ?? undefined,
 					}));
 					this.choose(`move ${String(moveChoiceSlot)}`);
 				} else if ((modelResponse.type === "switch" || modelResponse.type === "revive") && switchSlot) {
@@ -439,6 +460,8 @@ export class RLAgentAI extends BattlePlayer {
 						modelResponse: this.cloneForCapture(modelResponse),
 						chosenAction: `switch ${switchSlot}`,
 						usedFallback: false,
+						state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+						action_token: modelResponse?.action_token ?? undefined,
 					}));
 					this.chooseSwitchLikeAction(switchSlot);
 				} else {
@@ -453,6 +476,8 @@ export class RLAgentAI extends BattlePlayer {
 							modelResponse: this.cloneForCapture(modelResponse),
 							chosenAction: `move ${possibleMoves[0].slot}`,
 							usedFallback: true,
+							state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+							action_token: modelResponse?.action_token ?? undefined,
 						}));
 						this.choose(`move ${possibleMoves[0].slot}`);
 					} else {
@@ -467,6 +492,8 @@ export class RLAgentAI extends BattlePlayer {
 								modelResponse: this.cloneForCapture(modelResponse),
 								chosenAction: `switch ${fallbackSlot}`,
 								usedFallback: true,
+								state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+								action_token: modelResponse?.action_token ?? undefined,
 							}));
 							this.chooseSwitchLikeAction(fallbackSlot);
 						} else {
@@ -479,6 +506,8 @@ export class RLAgentAI extends BattlePlayer {
 								modelResponse: this.cloneForCapture(modelResponse),
 								chosenAction: "pass",
 								usedFallback: true,
+								state_json: (this.modelClient.lastRequest || modelData)?.battle_state ?? undefined,
+								action_token: modelResponse?.action_token ?? undefined,
 							}));
 							this.choose("pass");
 						}
