@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as path from "path";
 import {BattleStream, getPlayerStreams, Teams} from "..";
 import {getRLAgentMetrics, resetRLAgentMetrics, RLAgentAI} from "../tools/rl-agent";
@@ -49,6 +50,28 @@ const REPLAY_GRID_REFRESH_SECONDS = Number(process.env.REPLAY_GRID_REFRESH_SECON
 const REPLAY_GRID_FILE_NAME = process.env.REPLAY_GRID_FILE_NAME || "model-vs-model-grid.html";
 const DEFAULT_ENDPOINT = process.env.MODEL_SERVER_ENDPOINT || "http://127.0.0.1:5000/predict";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000);
+const BATTLE_FORMAT = process.env.BATTLE_FORMAT || "gen9randombattle";
+const TEAMS_JSON_FILE = process.env.TEAMS_JSON_FILE || "";
+
+type PackedTeamEntry = {id: string; name?: string; packedTeam: string};
+
+function loadTeamsFromFile(filePath: string): PackedTeamEntry[] {
+	const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+	const arr: PackedTeamEntry[] = Array.isArray(raw) ? raw : raw.teams ?? [];
+	const active = arr.filter((t: any) => t.active !== false && !t.archived && t.packedTeam);
+	if (active.length === 0) throw new Error(`No active teams found in ${filePath}`);
+	return active;
+}
+
+const LOADED_TEAMS: PackedTeamEntry[] | null = TEAMS_JSON_FILE ? loadTeamsFromFile(TEAMS_JSON_FILE) : null;
+
+function sampleTeam(exclude?: string): string {
+	if (!LOADED_TEAMS) return Teams.pack(Teams.generate("gen9randombattle"))!;
+	const pool = exclude ? LOADED_TEAMS.filter(t => t.id !== exclude) : LOADED_TEAMS;
+	const entry = pool[Math.floor(Math.random() * pool.length)];
+	return entry.packedTeam;
+}
+
 const activeBattleAborters = new Map<number, (reason?: string) => void>();
 const replayDashboardTiles: ReplayDashboardTile[] = [];
 
@@ -128,14 +151,15 @@ async function runSingleBattle(gameNumber: number): Promise<BattleResult> {
 	const battleStream = new BattleStream();
 	const streams = getPlayerStreams(battleStream);
 
-	const spec = {formatid: "gen9randombattle"};
+	const spec = {formatid: BATTLE_FORMAT};
+	const p1Entry = LOADED_TEAMS ? LOADED_TEAMS[Math.floor(Math.random() * LOADED_TEAMS.length)] : null;
 	const p1spec = {
 		name: `${assignment.p1.name} (${assignment.p1.modelID})`,
-		team: Teams.pack(Teams.generate("gen9randombattle")),
+		team: p1Entry ? p1Entry.packedTeam : Teams.pack(Teams.generate("gen9randombattle"))!,
 	};
 	const p2spec = {
 		name: `${assignment.p2.name} (${assignment.p2.modelID})`,
-		team: Teams.pack(Teams.generate("gen9randombattle")),
+		team: sampleTeam(p1Entry?.id),
 	};
 
 	const p1 = new RLAgentAI(streams.p1, {
@@ -295,6 +319,7 @@ function printStats() {
 
 	console.log("\n===== HEAD-TO-HEAD RESULTS =====");
 	console.log(`Configured Games: ${TOTAL_GAMES}`);
+	console.log(`Battle Format: ${BATTLE_FORMAT}${LOADED_TEAMS ? ` (${LOADED_TEAMS.length} teams loaded from file)` : ""}`);
 	console.log(`Configured Concurrency: ${CONCURRENCY}`);
 	console.log(`Battle Timeout: ${formatDurationMs(BATTLE_TIMEOUT_MS)}`);
 	console.log(`Max Failed Games Before Stop: ${MAX_FAILED_GAMES}`);

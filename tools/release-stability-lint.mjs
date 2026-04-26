@@ -16,6 +16,7 @@ const scopeCatalog = {
 			normalizedPath.startsWith('server/model-league/') ||
 			normalizedPath === 'sim/examples/model-vs-model-runner.ts' ||
 			normalizedPath === 'sim/examples/statistical-runner.ts' ||
+			normalizedPath === 'sim/examples/tv-runner.ts' ||
 			normalizedPath === 'sim/tools/model-league-runner.ts' ||
 			normalizedPath === 'sim/tools/protocol-state-tracker.ts' ||
 			normalizedPath === 'sim/tools/replay-export.ts' ||

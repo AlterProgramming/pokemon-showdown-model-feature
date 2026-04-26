@@ -629,6 +629,28 @@ exports.chatlogreader = 'fs';
  *     - minigame: make minigames (hangman, polls, etc.).
  *     - game: make games.
  */
+/**
+ * customhttpresponse - intercept HTTP requests before the static file handler.
+ * Return true to short-circuit; return false/undefined to fall through.
+ *
+ * Serves the /tv continuous-battle viewer (written by showdown-tv.service).
+ */
+exports.customhttpresponse = function(req, res) {
+	if (req.url === '/tv' || req.url === '/tv/') {
+		const fs = require('fs');
+		const path = require('path');
+		const htmlPath = path.join(__dirname, '../logs/tv/tv.html');
+		try {
+			const html = fs.readFileSync(htmlPath);
+			res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
+			res.end(html);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+};
+
 exports.grouplist = [
 	{
 		symbol: '~',

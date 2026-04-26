@@ -1,0 +1,25 @@
+[Unit]
+Description=Showdown TV continuous battle runner
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/showdown
+Environment=MODEL_A_ENDPOINT=http://127.0.0.1:5000/predict
+Environment=MODEL_B_ENDPOINT=http://127.0.0.1:5000/predict
+Environment=MODEL_A_ID=model2
+Environment=MODEL_B_ID=model4
+Environment=MODEL_A_NAME=Model2
+Environment=MODEL_B_NAME=Model4
+Environment=MODEL_A_PROFILE=joint-policy
+Environment=MODEL_B_PROFILE=joint-policy-value
+Environment=REPLAY_OUTPUT_DIR=/srv/showdown/logs/tv
+Environment=TV_REFRESH_SECONDS=60
+ExecStart=/usr/bin/node dist/sim/examples/tv-runner.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
