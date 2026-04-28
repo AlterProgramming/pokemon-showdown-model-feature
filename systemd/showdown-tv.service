@@ -1,25 +1,28 @@
 [Unit]
 Description=Showdown TV continuous battle runner
-After=network.target
+After=docker.service
+Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/srv/showdown
-Environment=MODEL_A_ENDPOINT=http://127.0.0.1:5000/predict
-Environment=MODEL_B_ENDPOINT=http://127.0.0.1:5000/predict
-Environment=MODEL_A_ID=model2
-Environment=MODEL_B_ID=model4
-Environment=MODEL_A_NAME=Model2
-Environment=MODEL_B_NAME=Model4
-Environment=MODEL_A_PROFILE=joint-policy
-Environment=MODEL_B_PROFILE=joint-policy-value
-Environment=REPLAY_OUTPUT_DIR=/srv/showdown/logs/tv
-Environment=TV_REFRESH_SECONDS=60
-ExecStart=/usr/bin/node dist/sim/examples/tv-runner.js
+ExecStartPre=-/usr/bin/docker rm -f showdown_tv
+ExecStart=/usr/bin/docker run --name showdown_tv --rm \
+  --network traefik_default \
+  -v /srv/showdown/data/logs:/app/logs \
+  -e MODEL_A_ENDPOINT=http://model-server:5000/predict \
+  -e MODEL_B_ENDPOINT=http://model-server:5000/predict \
+  -e MODEL_A_ID=model1 \
+  -e MODEL_B_ID=model4 \
+  -e MODEL_A_NAME=Model1 \
+  -e MODEL_B_NAME=Model4 \
+  -e MODEL_A_PROFILE=joint-policy \
+  -e MODEL_B_PROFILE=joint-policy-value \
+  -e REPLAY_OUTPUT_DIR=/app/logs/tv \
+  -e TV_REFRESH_SECONDS=60 \
+  showdown-showdown:latest node dist/sim/examples/tv-runner.js
+ExecStop=/usr/bin/docker stop showdown_tv
 Restart=always
 RestartSec=10
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
