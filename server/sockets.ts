@@ -341,11 +341,35 @@ export class ServerStream extends Streams.ObjectReadWriteStream<string> {
 			const cssServer = new StaticServer('./config');
 			const avatarServer = new StaticServer('./config/avatars');
 			const staticServer = new StaticServer('./server/static');
+			const serveTvPage = (req: http.IncomingMessage, res: http.ServerResponse) => {
+				const url = req.url ? new URL(req.url, 'http://localhost') : null;
+				if (url?.pathname !== '/tv' && url?.pathname !== '/tv/') return false;
+				const htmlPath = path.resolve('logs/tv/tv.html');
+				try {
+					const html = fs.readFileSync(htmlPath);
+					res.writeHead(200, {
+						'Content-Type': 'text/html; charset=utf-8',
+						'Cache-Control': 'no-store',
+					});
+					if (req.method !== 'HEAD') res.end(html);
+					else res.end();
+				} catch {
+					res.writeHead(503, {
+						'Content-Type': 'text/plain; charset=utf-8',
+						'Cache-Control': 'no-store',
+					});
+					res.end('TV replay is not available yet. Start the TV runner to generate logs/tv/tv.html.\n');
+				}
+				return true;
+			};
 			const staticRequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => {
 				// console.log(`static rq: ${req.socket.remoteAddress}:${req.socket.remotePort} -> ${req.socket.localAddress}:${req.socket.localPort} - ${req.method} ${req.url} ${req.httpVersion} - ${req.rawHeaders.join('|')}`);
 				req.resume();
 				req.addListener('end', () => {
 					if (config.customhttpresponse?.(req, res)) {
+						return;
+					}
+					if (serveTvPage(req, res)) {
 						return;
 					}
 
