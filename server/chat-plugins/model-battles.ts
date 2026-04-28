@@ -6,9 +6,11 @@ import {
 	loadHumanLeagueContext,
 	pickHumanOpponent,
 	recordHumanMatch,
+	saveHumanBattleReplay,
 	saveHumanMatchReplay,
 	type HumanLeagueContext,
 } from '../model-league/human-matches';
+import type {ModelLeagueModelConfig} from '../model-league/types';
 
 interface ModelBattleCatalogEntry {
 	id?: string;
@@ -326,6 +328,20 @@ function modelLeagueEntryAsCatalog(model: {
 	};
 }
 
+function getLeagueRotationCatalog(formatid: ID): ResolvedModelBattleCatalogEntry[] {
+	let context: HumanLeagueContext;
+	try {
+		context = loadHumanLeagueContext();
+	} catch {
+		return [];
+	}
+	const models = context.config.models.filter(m => m.active && !m.archived);
+	return models.map((model: ModelLeagueModelConfig) => ({
+		...modelLeagueEntryAsCatalog(model),
+		formats: [formatid],
+	}));
+}
+
 export async function createHumanLeagueBattle(connection: Connection, user: User) {
 	if (!user.named) {
 		connection.popup(`You must choose a username before entering the league.`);
@@ -422,7 +438,14 @@ export const commands: Chat.ChatCommands = {
 
 export const pages: Chat.PageTable = {
 	modelbattle(query, user) {
-		if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+		if (!user.named) {
+			this.title = '[Model Battles Login]';
+			return `<div class="pad ladder"><h2>Set player name</h2><div class="infobox">` +
+				`<p>Enter your name once and it will be reused on refresh.</p>` +
+				`<input id="ml-player-name" class="textbox" placeholder="Player name" /> ` +
+				`<button class="button notifying" onclick="(function(){var el=document.getElementById('ml-player-name');var n=el&&el.value?String(el.value).trim():'';if(!n)return;localStorage.setItem('modelLeaguePlayerName',n);app.send('/trn '+n+',0');setTimeout(function(){app.send('/j view-modelbattle');},500);})();">Continue</button>` +
+				`</div><script>(function(){try{const n=localStorage.getItem('modelLeaguePlayerName');if(n&&window.app){app.send('/trn '+n+',0');}}catch{}})();</script></div>`;
+		}
 		this.title = '[Model Battles]';
 		const catalog = getModelBattleCatalog();
 		const selectedID = toID(query.join('-'));
@@ -467,12 +490,18 @@ export const pages: Chat.PageTable = {
 		return buf;
 	},
 	modelbattlerematch(query, user) {
-		if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+		if (!user.named) return this.parse('/j view-modelbattle');
 		const roomid = query.join('-');
 		this.title = '[Model Battle Replay]';
 		const { battle, automatedPlayer } = getReplayableModelBattle(roomid, user);
 		const format = Dex.formats.get(battle.format, true);
-		const catalog = getModelBattleCatalog().filter(entry => entry.formats.includes(format.id));
+		const staticCatalog = getModelBattleCatalog().filter(entry => entry.formats.includes(format.id));
+		const rotationCatalog = getLeagueRotationCatalog(format.id);
+		const catalogById = new Map<ID, ResolvedModelBattleCatalogEntry>();
+		for (const entry of [...rotationCatalog, ...staticCatalog]) {
+			if (!catalogById.has(entry.id)) catalogById.set(entry.id, entry);
+		}
+		const catalog = [...catalogById.values()];
 		let buf = `<div class="pad ladder"><h2>Replay with the same teams</h2>${renderRefresh(this.pageid)}<hr />`;
 
 		buf += `<div class="infobox">`;
@@ -481,6 +510,14 @@ export const pages: Chat.PageTable = {
 		buf += `Current model: ${Utils.escapeHTML(automatedPlayer.name)}<br />`;
 		buf += `The new battle will reuse both exact team compositions from the finished battle.`;
 		buf += `</div><br />`;
+		try {
+			const league = loadHumanLeagueContext();
+			const active = league.config.models.filter(model => model.active && !model.archived);
+			buf += `<div class="infobox">`;
+			buf += `<strong>Current league rotation</strong><br />`;
+			buf += active.length ? active.map(model => Utils.escapeHTML(`${model.name} (${model.id})`)).join('<br />') : `No active models.`;
+			buf += `</div><br />`;
+		} catch {}
 
 		if (!catalog.length) {
 			buf += `<div class="message-error">No configured models support ${Utils.escapeHTML(format.name)}.</div>`;
@@ -498,6 +535,10 @@ export const pages: Chat.PageTable = {
 			buf += `<button class="button notifying" name="send" value="/modelbattle replay ${battle.roomid}, ${entry.id}">Start rematch</button>`;
 			buf += `</div><br />`;
 		}
+		const devRoom = Rooms.get("development");
+		if (devRoom && user.can("warn", null, devRoom)) {
+			buf += `<div class="infobox"><button class="button" name="send" value="/j view-modelleague">Open model league admin/settings</button></div>`;
+		}
 
 		buf += `</div>`;
 		return buf;
@@ -513,11 +554,6 @@ export const handlers: Chat.Handlers = {
 			`<button class="button notifying" name="send" value="/j view-modelbattlerematch-${battle.roomid}">Choose a model</button></div>`
 		).update();
 
-		// If this was a human-league match, record the result.
-		const leagueMatch = humanLeagueMatches.get(battle.roomid);
-		if (!leagueMatch) return;
-		humanLeagueMatches.delete(battle.roomid);
-
 		const humanPlayer = battle.players.find(player => !player.isAutomated);
 		if (!humanPlayer) return;
 		const humanId = toID(humanPlayer.name);
@@ -527,6 +563,30 @@ export const handlers: Chat.Handlers = {
 		else if (winner === humanId) outcome = 'human';
 		else if (winner === modelPlayerId) outcome = 'model';
 		else outcome = 'tie';
+
+		const leagueMatch = humanLeagueMatches.get(battle.roomid);
+		try {
+			const leagueContext = leagueMatch?.leagueContext || loadHumanLeagueContext();
+			saveHumanBattleReplay({
+				config: leagueContext.config,
+				roomId: battle.roomid,
+				modelId: leagueMatch?.modelId || automatedPlayer.automation?.modelID || null,
+				modelName: leagueMatch?.modelName || automatedPlayer.name,
+				modelEndpoint: leagueMatch?.modelEndpoint ?? automatedPlayer.automation?.endpoint ?? null,
+				winner: outcome,
+				humanDisplayName: leagueMatch?.humanDisplayName || humanPlayer.name,
+				turns: battle.turn ?? null,
+				battleLog: (battle.room.log?.log || []).slice(),
+			});
+		} catch (replayErr: any) {
+			battle.room.add(
+				`|raw|<div class="message-error">Failed to record human-vs-model battle: ${Utils.escapeHTML(replayErr?.message || String(replayErr))}</div>`
+			).update();
+		}
+
+		// If this was a human-league match, record the result.
+		if (!leagueMatch) return;
+		humanLeagueMatches.delete(battle.roomid);
 
 		try {
 			const record = recordHumanMatch({

@@ -21,6 +21,19 @@ import type {
 export const HUMAN_LOCAL_ID = "human:local";
 export const HUMAN_LOCAL_NAME = "Human";
 
+export interface HumanBattleReplayRecord {
+	version: 1;
+	timestamp: string;
+	roomId: string;
+	modelId: string | null;
+	modelName: string;
+	modelEndpoint: string | null;
+	winner: "human" | "model" | "tie";
+	humanDisplayName: string;
+	turns: number | null;
+	battleLog: string[];
+}
+
 export interface HumanMatchRecord {
 	id: string;
 	timestamp: string;
@@ -279,6 +292,42 @@ export function saveHumanMatchReplay(options: {
 		version: 1,
 		...record,
 		battleLog,
+	};
+	FS(safeFilePath).parentDir().mkdirpSync();
+	FS(safeFilePath).writeUpdate(() => JSON.stringify(payload, null, 2));
+	return safeFilePath;
+}
+
+/**
+ * Persist every human-vs-model battle log, including non-league model battles.
+ * Writes one file per battle under logRoot/human-battles/YYYY-MM-DD/{roomId}.json.
+ */
+export function saveHumanBattleReplay(options: {
+	config: ModelLeagueConfig;
+	roomId: string;
+	modelId: string | null;
+	modelName: string;
+	modelEndpoint: string | null;
+	winner: "human" | "model" | "tie";
+	humanDisplayName: string;
+	turns: number | null;
+	battleLog: string[];
+}): string {
+	const day = new Date().toISOString().slice(0, 10);
+	const dir = `${options.config.logRoot}/human-battles/${day}`;
+	const safeRoomId = options.roomId.replace(/[^a-z0-9_-]/gi, "_");
+	const safeFilePath = `${dir}/${safeRoomId}.json`;
+	const payload: HumanBattleReplayRecord = {
+		version: 1,
+		timestamp: new Date().toISOString(),
+		roomId: options.roomId,
+		modelId: options.modelId,
+		modelName: options.modelName,
+		modelEndpoint: options.modelEndpoint,
+		winner: options.winner,
+		humanDisplayName: options.humanDisplayName,
+		turns: options.turns,
+		battleLog: options.battleLog,
 	};
 	FS(safeFilePath).parentDir().mkdirpSync();
 	FS(safeFilePath).writeUpdate(() => JSON.stringify(payload, null, 2));
