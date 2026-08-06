@@ -1,6 +1,6 @@
 param(
     [string]$ServerVariant,
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'not-elman-policy', 'custom')]
     [string]$RLModelProfile,
     [string]$ServerModelIDs = '',
     [string]$ServerHost = '127.0.0.1',

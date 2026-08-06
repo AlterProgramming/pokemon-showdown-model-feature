@@ -82,6 +82,36 @@ Server endpoint for the simulator:
 http://127.0.0.1:5000/predict
 ```
 
+## 5.1 Model1 to Elman Network-of-Theseus reproduction
+
+This is the reproduction path for the paper-based 1-to-1 transformation. It uses Model1 as the frozen guide and trains a new three-layer Elman target; it does not use the word-prediction model.
+
+From the model-server repo, pass one or more battle-log paths explicitly:
+
+```bash
+./.venv/Scripts/python.exe train_not_model1_elman.py <battle-log-or-directory> \
+  --guide-model-path artifacts/model_1.keras \
+  --guide-vocab-path artifacts/action_vocab_1.json \
+  --model-name model1_not_elman3
+```
+
+The trainer writes `artifacts/model1_not_elman3.keras` (a flat serving wrapper), `training_model1_not_elman3.keras`, copied action vocabulary, alignment metrics, and registry metadata. The target consumes a bounded 16-step public-state history with repeat-first left padding, aligns each recurrent prefix to the frozen Model1 representation with linear CKA, then performs masked behavioral-cloning fine-tuning.
+
+Start only this target:
+
+```bash
+python flask_api_multi.py --mode model1_not_elman3 --host 127.0.0.1 --port 5000
+```
+
+Run the simulator with the explicit history-bearing contract:
+
+```bash
+RL_MODEL_ID=model1_not_elman3 \
+RL_MODEL_PROFILE=not-elman-policy \
+RL_MODEL_ENDPOINT=http://127.0.0.1:5000/predict \
+node ./dist/sim/examples/statistical-runner.js
+```
+
 ## 6. Run Random-vs-Model Benchmark
 
 From Git Bash in the `pokemon-showdown` repo:

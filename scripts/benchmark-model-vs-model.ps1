@@ -15,13 +15,13 @@ param(
     [string]$ReplayGridFileName = '',
     [string]$ModelAName = 'Model1',
     [string]$ModelAID = 'model1',
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'not-elman-policy', 'custom')]
     [string]$ModelAProfile = 'move-only',
     [ValidateSet('default', 'yes', 'no')]
     [string]$ModelAAllowVoluntarySwitches = 'default',
     [string]$ModelBName = 'Model2',
     [string]$ModelBID = 'model2',
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'not-elman-policy', 'custom')]
     [string]$ModelBProfile = 'joint-policy',
     [ValidateSet('default', 'yes', 'no')]
     [string]$ModelBAllowVoluntarySwitches = 'default',

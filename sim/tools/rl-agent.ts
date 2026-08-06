@@ -195,11 +195,25 @@ export function getRLAgentMetrics() {
 	};
 }
 
+export function appendRLModelStateHistory(
+	history: number[][],
+	stateVector: number[],
+	maxLength: number,
+): number[][] {
+	if (!Number.isInteger(maxLength) || maxLength <= 0) {
+		throw new RangeError(`maxLength must be a positive integer, got ${maxLength}`);
+	}
+	return [...history.map(vector => [...vector]), [...stateVector]].slice(-maxLength);
+}
+
 export class RLAgentAI extends BattlePlayer {
 	private readonly modelID: string | undefined;
 	private readonly modelProfile: RLModelProfile;
 	private readonly allowVoluntarySwitches: boolean;
 	private readonly requiresStateVector: boolean;
+	private readonly requiresStateHistory: boolean;
+	private readonly stateHistoryLength: number;
+	private readonly stateHistory: number[][] = [];
 	private readonly useCompactWordPolicyPayload: boolean;
 	private readonly modelClient: RLModelClient;
 	private readonly onDecision: ((record: RLAgentDecisionRecord) => void) | undefined;
@@ -236,6 +250,11 @@ export class RLAgentAI extends BattlePlayer {
 		this.modelID = modelID;
 		this.modelProfile = profileConfig.profile;
 		this.allowVoluntarySwitches = profileConfig.allowVoluntarySwitches;
+		this.requiresStateHistory = profileConfig.requiresStateHistory;
+		const configuredHistoryLength = Number(process.env.RL_MODEL_SEQUENCE_LENGTH || 16);
+		this.stateHistoryLength = Number.isInteger(configuredHistoryLength) && configuredHistoryLength > 0
+			? configuredHistoryLength
+			: 16;
 		this.requiresStateVector = modelID !== "word_policy_v1";
 		this.useCompactWordPolicyPayload = modelID === "word_policy_v1";
 		this.onDecision = options.onDecision;
@@ -310,10 +329,11 @@ export class RLAgentAI extends BattlePlayer {
 					this.choose("pass");
 					return;
 				}
-				const {snapshot, stateVector} = this.buildModelState(perspective);
+				const {snapshot, stateVector, stateHistory} = this.buildModelState(perspective);
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
 					...(stateVector ? {state_vector: stateVector} : {}),
+					...(stateHistory ? {state_history: stateHistory} : {}),
 					battle_state: snapshot,
 					perspective_player: perspective,
 					legal_moves: [],
@@ -414,10 +434,11 @@ export class RLAgentAI extends BattlePlayer {
 				if (!this.allowVoluntarySwitches && availableSwitches.length) {
 					incrementActionMetric("voluntarySwitchOptionsSuppressed");
 				}
-				const {snapshot, stateVector} = this.buildModelState(perspective);
+				const {snapshot, stateVector, stateHistory} = this.buildModelState(perspective);
 				const modelData = {
 					...(this.modelID ? {model_id: this.modelID} : {}),
 					...(stateVector ? {state_vector: stateVector} : {}),
+					...(stateHistory ? {state_history: stateHistory} : {}),
 					battle_state: snapshot,
 					perspective_player: perspective,
 					legal_moves: possibleMoves,
@@ -563,13 +584,19 @@ export class RLAgentAI extends BattlePlayer {
 		}
 	}
 
-	private buildModelState(perspective: "p1" | "p2"): {snapshot: AnyObject, stateVector?: number[]} {
+	private buildModelState(perspective: "p1" | "p2"): {snapshot: AnyObject, stateVector?: number[], stateHistory?: number[][]} {
 		const buildStart = RL_AGENT_METRICS_ENABLED ? Date.now() : 0;
 		try {
 			const snapshot = this.tracker.getSnapshot();
+			const stateVector = this.requiresStateVector ? this.tracker.encodeState(snapshot, perspective) : undefined;
+			if (stateVector && this.requiresStateHistory) {
+				const nextHistory = appendRLModelStateHistory(this.stateHistory, stateVector, this.stateHistoryLength);
+				this.stateHistory.splice(0, this.stateHistory.length, ...nextHistory);
+			}
 			return {
 				snapshot,
-				...(this.requiresStateVector ? {stateVector: this.tracker.encodeState(snapshot, perspective)} : {}),
+				...(stateVector ? {stateVector} : {}),
+				...(this.requiresStateHistory ? {stateHistory: this.stateHistory.map(vector => [...vector])} : {}),
 			};
 		} finally {
 			if (RL_AGENT_METRICS_ENABLED) {
