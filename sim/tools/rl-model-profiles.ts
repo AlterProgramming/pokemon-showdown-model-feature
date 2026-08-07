@@ -4,12 +4,13 @@
  * continue to be benchmarked against newer, richer pipelines.
  **********************************************************************/
 
-export type RLModelProfile = 'move-only' | 'joint-policy' | 'joint-policy-value' | 'custom';
+export type RLModelProfile = 'move-only' | 'joint-policy' | 'joint-policy-value' | 'not-elman-policy' | 'custom';
 
 export type RLModelProfileConfig = {
 	profile: RLModelProfile;
 	description: string;
 	allowVoluntarySwitches: boolean;
+	requiresStateHistory: boolean;
 };
 
 const PROFILE_CONFIGS: Record<Exclude<RLModelProfile, 'custom'>, RLModelProfileConfig> = {
@@ -17,16 +18,25 @@ const PROFILE_CONFIGS: Record<Exclude<RLModelProfile, 'custom'>, RLModelProfileC
 		profile: 'move-only',
 		description: 'Move-only action contract baseline for the legacy model_1 pipeline.',
 		allowVoluntarySwitches: false,
+		requiresStateHistory: false,
 	},
 	'joint-policy': {
 		profile: 'joint-policy',
 		description: 'Full move-or-switch action space for newer joint-policy models.',
 		allowVoluntarySwitches: true,
+		requiresStateHistory: false,
 	},
 	'joint-policy-value': {
 		profile: 'joint-policy-value',
 		description: 'Joint policy with auxiliary turn-outcome and value heads for the newer model_4 pipeline.',
 		allowVoluntarySwitches: true,
+		requiresStateHistory: false,
+	},
+	'not-elman-policy': {
+		profile: 'not-elman-policy',
+		description: 'Model1 Network of Theseus recurrent target with explicit public-state history.',
+		allowVoluntarySwitches: false,
+		requiresStateHistory: true,
 	},
 };
 
@@ -62,6 +72,11 @@ export function normalizeRLModelProfile(value: string | undefined): RLModelProfi
 	case 'value-head':
 	case 'value-policy':
 		return 'joint-policy-value';
+	case 'not-elman-policy':
+	case 'not-elman':
+	case 'model1-not-elman3':
+	case 'model1_not_elman3':
+		return 'not-elman-policy';
 	case 'custom':
 		return 'custom';
 	default:
@@ -79,6 +94,7 @@ export function resolveRLModelProfileConfig(
 			profile: 'custom',
 			description: 'Custom action-contract override.',
 			allowVoluntarySwitches: allowVoluntarySwitchesOverride ?? true,
+			requiresStateHistory: false,
 		};
 	}
 

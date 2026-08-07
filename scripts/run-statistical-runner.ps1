@@ -12,7 +12,7 @@ param(
     [string]$ReplayGridFileName = '',
     [string]$RLModelID = '',
     [string]$RLModelEndpoint = '',
-    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'custom')]
+    [ValidateSet('move-only', 'model1-legacy', 'joint-policy', 'joint-policy-value', 'not-elman-policy', 'custom')]
     [string]$RLModelProfile = 'joint-policy',
     [ValidateSet('default', 'yes', 'no')]
     [string]$AllowVoluntarySwitches = 'default',

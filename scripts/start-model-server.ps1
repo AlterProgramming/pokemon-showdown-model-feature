@@ -118,7 +118,10 @@ if ($requestedModelIDs.Count) {
 }
 
 function New-VectorWarmupPayload {
+    param([string]$ModelID = '')
+
     return @{
+        model_id = $ModelID
         state_vector = @(for ($i = 0; $i -lt 582; $i++) { 0 })
         legal_moves = @(
             @{
@@ -130,6 +133,32 @@ function New-VectorWarmupPayload {
         )
         legal_switches = @()
     } | ConvertTo-Json -Depth 6
+}
+
+function New-SequenceWarmupPayload {
+    param(
+        [string]$ModelID,
+        [int]$SequenceLength
+    )
+
+    $history = @()
+    for ($turn = 0; $turn -lt $SequenceLength; $turn++) {
+        $history += ,@(for ($i = 0; $i -lt 582; $i++) { 0 })
+    }
+
+    return @{
+        model_id = $ModelID
+        state_history = $history
+        legal_moves = @(
+            @{
+                slot = 1
+                move = 'Tackle'
+                id = 'tackle'
+                disabled = $false
+            }
+        )
+        legal_switches = @()
+    } | ConvertTo-Json -Depth 8
 }
 
 function New-EntityWarmupPayload {
@@ -212,11 +241,28 @@ function Get-ModelServerWarmupPayload {
         $Health
     )
 
+    $modelID = [string]$Health.default_model_id
+    $contract = $null
+    if ($Health.model_contracts -and $modelID) {
+        $contractProperty = $Health.model_contracts.PSObject.Properties[$modelID]
+        if ($contractProperty) {
+            $contract = $contractProperty.Value
+        }
+    }
+
+    if ($contract -and [bool]$contract.sequence_model) {
+        $sequenceLength = [int]$contract.sequence_length
+        if ($sequenceLength -le 0) {
+            $sequenceLength = 16
+        }
+        return New-SequenceWarmupPayload -ModelID $modelID -SequenceLength $sequenceLength
+    }
+
     if ($Health.default_entity_model_id) {
         return New-EntityWarmupPayload
     }
 
-    return New-VectorWarmupPayload
+    return New-VectorWarmupPayload -ModelID $modelID
 }
 
 function Wait-ForModelServerReady {
@@ -234,7 +280,20 @@ function Wait-ForModelServerReady {
                 continue
             }
 
-            $warmupMode = if ($health.default_entity_model_id) { 'entity' } else { 'vector' }
+            $defaultContract = $null
+            if ($health.model_contracts -and $health.default_model_id) {
+                $contractProperty = $health.model_contracts.PSObject.Properties[[string]$health.default_model_id]
+                if ($contractProperty) {
+                    $defaultContract = $contractProperty.Value
+                }
+            }
+            $warmupMode = if ($defaultContract -and [bool]$defaultContract.sequence_model) {
+                'sequence'
+            } elseif ($health.default_entity_model_id) {
+                'entity'
+            } else {
+                'vector'
+            }
             Write-Host "[server] Warmup mode: $warmupMode" -ForegroundColor DarkGray
 
             $response = Invoke-WebRequest `
